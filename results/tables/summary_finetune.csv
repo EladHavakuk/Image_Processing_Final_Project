@@ -1,0 +1,7 @@
+distortion,model,precision,recall,f1
+compression,baseline,0.559,0.256,0.329
+compression,finetuned,0.522,0.288,0.339
+lowlight,baseline,0.327,0.113,0.154
+lowlight,finetuned,0.261,0.106,0.134
+motion_blur,baseline,0.659,0.233,0.317
+motion_blur,finetuned,0.545,0.247,0.311

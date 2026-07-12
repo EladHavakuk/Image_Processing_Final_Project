@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.idea/
+.vscode/
+*.log
+.DS_Store
+
+# training run artifacts (regenerable via finetune_run_v2.py)
+runs/
+data/finetune/
+data/finetune_v2/
