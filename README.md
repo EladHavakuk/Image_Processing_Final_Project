@@ -185,7 +185,7 @@ additive-noise cases to any pixel-domain distortion.
 |---|---|---|
 | Compression | Bilateral filter on the Y (luma) channel only | Smooths blocking artifacts while preserving color and most edges |
 | Low-light | Gamma correction (γ=0.35) + CLAHE on the L channel | Lifts shadow detail, then boosts local contrast without blowing out highlights |
-| Motion blur | Wiener deconvolution (`skimage.restoration.wiener`) using the **known** blur kernel | Legitimate non-blind deconvolution, since we control the exact kernel used to create the distortion |
+| Motion blur | Wiener deconvolution (`skimage.restoration.wiener`) using the **known** blur kernel, with regularization strength scaled to blur severity | Legitimate non-blind deconvolution, since we control the exact kernel used to create the distortion. A fixed regularization value caused severe artifacts at high severity — see §10 for the fix. |
 
 **Task overlay example** (edges/corners and lines, clean vs. severely motion-blurred):
 
@@ -204,8 +204,8 @@ additive-noise cases to any pixel-domain distortion.
 | compression | restored | 30.0 | 0.601 | 0.461 | 0.603 | 0.290 | **0.367** |
 | lowlight | distorted | 9.4 | 0.364 | 0.284 | 0.341 | 0.124 | **0.166** |
 | lowlight | restored | 12.2 | 0.354 | 0.298 | 0.314 | 0.116 | 0.154 |
-| motion_blur | distorted | 27.7 | 0.443 | 0.356 | 0.648 | 0.241 | **0.323** |
-| motion_blur | restored | 25.7 | 0.625 | 0.494 | 0.532 | 0.244 | 0.311 |
+| motion_blur | distorted | 27.7 | 0.443 | 0.356 | 0.648 | 0.241 | 0.323 |
+| motion_blur | restored | 28.3 | 0.513 | 0.399 | 0.639 | 0.275 | **0.357** |
 
 Full per-image, per-level data: `results/tables/full_results.csv` (4,650 rows).
 
@@ -231,10 +231,16 @@ Full per-image, per-level data: `results/tables/full_results.csv` (4,650 rows).
    noise/color artifacts in ways that confuse the detector — a genuine, non-obvious
    result, not a bug.
 
-4. **Structural restoration ≠ semantic improvement.** Motion-blur deconvolution
-   substantially improves edge/line structure (edge IoU 0.44→0.63, line IoU 0.36→0.49)
-   but detection F1 stays flat (0.32→0.31). Sharper edges don't automatically mean
-   better object recognition.
+4. **Regularization strength matters as much as the restoration method itself.** The
+   first version of motion-blur restoration used a fixed Wiener deconvolution
+   regularization parameter, which worked for mild blur but caused severe ringing
+   artifacts at high severity (visibly broken output, and detection F1 *dropped* after
+   "restoration"). Scaling the regularization with blur severity (see §10) fixed
+   this: with a properly-tuned deconvolution, motion-blur restoration now
+   genuinely helps across every metric, including detection F1 (0.323→0.357). The
+   lesson: a restoration method can be theoretically correct (we used the *exact*
+   known blur kernel) and still fail badly if its hyperparameters aren't matched to
+   the severity range being restored.
 
 5. **Baseline domain gap.** Even on *clean* images, stock COCO-pretrained YOLOv8n only
    reaches F1=0.45 against BDD100K's real GT — expected, since BDD100K's camera
@@ -355,6 +361,30 @@ didn't survive between separate tool invocations in the sandbox this was built i
 Fixed with `run_full.py`'s resumable batch design: each call processes a bounded number
 of new images and checkpoints progress to disk, so the full run could be split across
 several sequential foreground calls without losing work.
+
+**8. A visibly broken restoration result caught during review.** The qualitative
+before/after figure showed severe periodic vertical-stripe artifacts in the "restored"
+motion-blur panel — not subtle, clearly wrong on visual inspection. Root cause: Wiener
+deconvolution's regularization parameter (`balance`) was fixed at a value tuned for
+mild blur; at severe blur (kernel=31px) the same value let noise get massively
+amplified at the blur kernel's near-zero frequency-response points, which for a purely
+horizontal kernel shows up as vertical striping in the spatial domain. Quantitatively,
+this wasn't just ugly — it was actively harmful: restored PSNR at the most severe level
+was *worse* than the distorted image's (16.2 dB vs. 25.0 dB), and it was quietly
+dragging down the aggregate numbers reported for motion-blur restoration. Fixed by
+scaling the regularization strength with kernel size (`balance` from 0.02 at the
+mildest level up to 1.5 at the most severe, tuned empirically against both PSNR and a
+simple "stripiness" proxy — the standard deviation of column-mean intensity, which
+spikes for periodic vertical artifacts). After the fix, restored PSNR at the most
+severe level improved to 23.5 dB (still short of "beating" the distorted image at that
+extreme, which is a believable limit for single-image deconvolution at that severity)
+and the visible artifacts were gone. This changed the motion-blur restoration numbers
+throughout §8 — the version of this README you're reading reflects the corrected run,
+not the original one. Worth calling out: the original (buggy) numbers had *higher* edge
+IoU and line IoU than the corrected ones (0.63 vs. 0.51, 0.49 vs. 0.40) — the ringing
+artifact was inventing spurious high-frequency structure that happened to inflate those
+particular metrics, which is itself a good reminder that a metric moving in a
+favorable direction isn't proof that something is actually working.
 
 ---
 

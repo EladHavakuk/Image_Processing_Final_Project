@@ -38,12 +38,21 @@ def restore_lowlight(img_rgb: np.ndarray, gamma: float = 0.35, clip_limit: float
 
 
 def restore_motion_blur(img_rgb: np.ndarray, kernel_size: int, angle: float = 0.0,
-                         balance: float = 0.02) -> np.ndarray:
+                         balance: float = None) -> np.ndarray:
     """
     Non-blind deconvolution using the *known* blur kernel (we control the blur ourselves,
     so this is legitimate non-blind restoration, not blind deconvolution).
     Applies skimage's Wiener filter per channel.
+
+    balance controls regularization strength. A single fixed value doesn't work well
+    across all severities: too weak for large kernels causes severe ringing/periodic
+    striping artifacts (frequency-domain noise amplification at the blur kernel's
+    near-zero response points) and can even reduce PSNR *below* the distorted image's.
+    Verified empirically (see README troubleshooting log) and scaled accordingly unless
+    an explicit balance is passed.
     """
+    if balance is None:
+        balance = _adaptive_balance(kernel_size)
     kernel = get_motion_blur_kernel(kernel_size, angle)
     out = np.zeros_like(img_rgb)
     for c in range(3):
@@ -51,6 +60,19 @@ def restore_motion_blur(img_rgb: np.ndarray, kernel_size: int, angle: float = 0.
         restored = skimage_wiener(channel, kernel, balance=balance)
         out[:, :, c] = np.clip(restored * 255.0, 0, 255).astype(np.uint8)
     return out
+
+
+# Empirically tuned (see README troubleshooting log): larger blur kernels need much
+# stronger regularization to avoid ringing/striping artifacts from noise amplification
+# at the kernel's near-zero frequency-response points.
+_KERNEL_TO_BALANCE = {5: 0.02, 9: 0.05, 15: 0.3, 21: 0.6, 31: 1.5}
+
+
+def _adaptive_balance(kernel_size: int) -> float:
+    if kernel_size in _KERNEL_TO_BALANCE:
+        return _KERNEL_TO_BALANCE[kernel_size]
+    # fallback for any untabulated kernel size: interpolate on a similar curve
+    return 0.02 * (kernel_size / 5.0) ** 2.4
 
 
 RESTORE_FN = {
