@@ -1,0 +1,5 @@
+method,psnr,stripe_score,edge_iou,line_iou,det_f1
+distorted,27.659,0.544,0.443,0.356,0.323
+wiener_fixed,25.698,2.78,0.625,0.494,0.311
+wiener_tuned,28.308,1.487,0.513,0.399,0.357
+richardson_lucy,27.581,2.042,0.479,0.371,0.291

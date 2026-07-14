@@ -18,7 +18,7 @@ below come from real runs on real driving-scene photos (BDD100K), not simulated 
 | 3 | Methods | Canny + Shi-Tomasi/ORB, Canny + Hough Transform, YOLOv8n | All existing, standard library implementations — no custom algorithms |
 | 4 | Distortions | Compression (JPEG), Low-light, Motion blur | Directly relevant to driving/dashcam conditions |
 | 5 | Severity | 5 calibrated levels per distortion, measured in PSNR (dB) | Same "severity → SNR" philosophy as the course example, generalized to non-additive distortions |
-| 6 | Restoration | Bilateral deblocking, Gamma+CLAHE, Wiener deconvolution | Matched to each distortion's cause, all standard `cv2`/`skimage` techniques |
+| 6 | Restoration | Bilateral deblocking, Gamma+CLAHE, Wiener deconvolution (tuned per severity) | Matched to each distortion's cause; motion-blur restoration explicitly compares 3 methods — see [§7.1](#71-restoration-method-comparison-motion-blur) |
 | 7 | Fine-tuning | YOLOv8n only | Edge/Corner and Line detection are classical — no weights to fine-tune |
 
 ---
@@ -31,18 +31,22 @@ below come from real runs on real driving-scene photos (BDD100K), not simulated 
 ├── LICENSE
 ├── src/                          <- all pipeline code
 │   ├── distortions.py            <- 3 distortions x 5 severity levels
-│   ├── restoration.py            <- classical restoration per distortion
-│   ├── metrics.py                <- PSNR/SNR, detection P/R/F1, edge/line IoU
+│   ├── restoration.py            <- classical restoration per distortion (3 motion-blur variants kept side by side)
+│   ├── metrics.py                <- PSNR/SNR, detection P/R/F1, edge/line IoU, stripe/artifact score
 │   ├── task_edge_corner.py       <- Task 1 (low-level, classical)
 │   ├── task_lines.py             <- Task 2 (low-level, classical)
 │   ├── task_detection.py         <- Task 3 (high-level, DL) + BDD100K GT loader
 │   ├── pipeline.py                <- orchestrates all 3 tasks x all distortions x all stages
 │   ├── run_full.py                <- resumable batch runner (used to process all 150 images)
+│   ├── recompute_motion_blur_restore.py <- targeted recompute after restoration.py changes
+│   ├── compare_motion_blur_methods.py   <- §7.1 ablation study across all 3 restoration methods
 │   ├── finetune_utils.py          <- BDD100K GT -> YOLO label format conversion
 │   ├── finetune_run.py            <- Stage 4, attempt 1 (see troubleshooting log)
 │   ├── finetune_run_v2.py         <- Stage 4, attempt 2 (frozen backbone, no mosaic)
 │   ├── finetune_eval_fixed.py     <- corrected baseline-vs-finetuned evaluation
-│   └── make_figures.py            <- generates every figure in results/figures/
+│   ├── make_figures.py            <- generates the main report figures
+│   ├── make_slide_figures.py      <- slide-optimized versions of the key charts
+│   └── make_comparison_figures.py <- §7.1 ablation study figures
 ├── data/
 │   └── raw/bdd_subset/
 │       ├── images/                <- 150 BDD100K images
@@ -51,8 +55,12 @@ below come from real runs on real driving-scene photos (BDD100K), not simulated 
 │   ├── yolov8n.pt                 <- pretrained COCO weights (baseline)
 │   └── yolov8n_finetuned.pt       <- fine-tuned on distorted images (Stage 4)
 ├── results/
-│   ├── tables/                    <- all raw + summary CSVs
+│   ├── tables/                    <- all raw + summary CSVs, including the motion-blur method comparison
 │   └── figures/                   <- all plots (referenced throughout this README)
+├── presentations/
+│   ├── build_deck.py              <- builds the final PPTX (pure Python, python-pptx)
+│   ├── vision_robustness_presentation.pptx
+│   └── assets/                    <- figures embedded in the deck
 └── docs/
     └── (this README is the primary report; §10 below is the full process/troubleshooting log)
 ```
@@ -185,11 +193,93 @@ additive-noise cases to any pixel-domain distortion.
 |---|---|---|
 | Compression | Bilateral filter on the Y (luma) channel only | Smooths blocking artifacts while preserving color and most edges |
 | Low-light | Gamma correction (γ=0.35) + CLAHE on the L channel | Lifts shadow detail, then boosts local contrast without blowing out highlights |
-| Motion blur | Wiener deconvolution (`skimage.restoration.wiener`) using the **known** blur kernel, with regularization strength scaled to blur severity | Legitimate non-blind deconvolution, since we control the exact kernel used to create the distortion. A fixed regularization value caused severe artifacts at high severity — see §10 for the fix. |
+| Motion blur | Wiener deconvolution (`skimage.restoration.wiener`), known kernel, regularization tuned per severity level | Best real-world detection F1 of three methods explicitly compared (0.357 vs. 0.323 for no restoration at all) — see §7.1 |
 
 **Task overlay example** (edges/corners and lines, clean vs. severely motion-blurred):
 
 ![Task overlays](results/figures/task_overlays.png)
+
+### 7.1 Restoration method comparison (motion blur)
+
+Motion-blur restoration is the one place in this project where the "obvious" choice
+changed twice, and rather than only reporting the final answer, all three attempts are
+kept side by side in `restoration.py` (`MOTION_BLUR_METHODS`) and compared explicitly
+across all 150 images and all 5 severity levels in
+`results/tables/motion_blur_method_comparison.csv`.
+
+**Why Wiener deconvolution gets worse as the blur kernel gets longer.** Wiener
+deconvolution divides in the frequency domain by the blur kernel's frequency response
+(regularized by a `balance` parameter to avoid dividing by ~0). A linear motion-blur
+kernel of length *L* has a sinc-shaped frequency response with *zeros* spaced roughly
+*1/L* apart — the longer the kernel, the more zeros, more densely packed. Near each
+zero, the unregularized inverse blows up, amplifying whatever noise/quantization exists
+at that frequency; for a horizontal kernel this amplification shows up as periodic
+*vertical* stripes in the spatial domain. A single `balance` value is one global
+trade-off between "suppress noise near the zeros" and "actually deblur" — for a long
+kernel with many closely-spaced zeros, no single value works well everywhere.
+
+**The three methods compared:**
+
+| Method | Description |
+|---|---|
+| `wiener_fixed` | Wiener deconvolution, single fixed `balance=0.02` (the initial, naive attempt) |
+| `wiener_tuned` | Wiener deconvolution, `balance` scaled up for longer kernels via a hand-tuned lookup table |
+| `richardson_lucy` | Richardson-Lucy deconvolution, fixed at 3 iterations (iteration count is itself the regularization — early stopping) |
+
+**Aggregate results (all 150 images, all 5 severity levels):**
+
+| Method | PSNR (dB) | Stripe score (artifact, lower=cleaner) | Edge IoU | Line IoU | Detection F1 |
+|---|---|---|---|---|---|
+| *(distorted, no restoration)* | 27.66 | 0.54 | 0.443 | 0.356 | 0.323 |
+| `wiener_fixed` | 25.70 | 2.78 | **0.625** | **0.494** | 0.311 |
+| `wiener_tuned` | **28.31** | 1.49 | 0.513 | 0.399 | **0.357** |
+| `richardson_lucy` | 27.58 | 2.04 | 0.479 | 0.371 | 0.291 |
+
+No method wins on every metric — that disagreement *is* the finding. `wiener_fixed`
+has the best structural recovery (edge/line IoU) on average, `wiener_tuned` has the
+best PSNR and by far the best detection F1, and `richardson_lucy` isn't actually the
+best on anything in aggregate, despite being the simplest to tune (a single iteration
+count, no per-level lookup table).
+
+**Where it really falls apart — per severity level:**
+
+| Level (kernel) | Method | PSNR | Stripe score | Detection F1 |
+|---|---|---|---|---|
+| 4 (31px, most severe) | distorted | 24.17 | 0.34 | 0.172 |
+| 4 | `wiener_fixed` | **16.53** | **4.23** | **0.017** |
+| 4 | `wiener_tuned` | 23.33 | 1.36 | 0.199 |
+| 4 | `richardson_lucy` | 23.97 | 1.32 | 0.104 |
+
+At the most severe level, `wiener_fixed` doesn't just underperform — it nearly
+destroys detection entirely (F1 0.017, essentially failing), which is exactly what the
+frequency-domain explanation above predicts: the longest kernel has the most tightly
+packed frequency-response zeros, and a regularization value tuned for short kernels is
+far too weak here. Both `wiener_tuned` and `richardson_lucy` avoid that collapse, but
+`richardson_lucy` — despite the better stripe/PSNR numbers — still ends up with *worse*
+detection F1 than `wiener_tuned` at this level (0.104 vs. 0.199) and even worse than
+doing nothing at all (0.172).
+
+**Visual comparison** (clean / distorted / all three restorations, at increasing severity):
+
+![Motion blur method comparison grid](results/figures/motion_blur_method_grid.png)
+
+**Metric trends across severity, all methods overlaid:**
+
+![PSNR by method](results/figures/mb_compare_psnr.png)
+![Stripe score by method](results/figures/mb_compare_stripe.png)
+![Detection F1 by method](results/figures/mb_compare_det_f1.png)
+
+**Takeaway.** `wiener_tuned` is used as the production restoration method for this
+project's headline results (§8) because it has the best detection F1 — the metric with
+real ground truth, and therefore the one we trust most. But it required the most manual
+tuning (a per-severity-level lookup table) and the LICENSE of "just tune the
+regularization" only goes so far, as `wiener_fixed`'s collapse at the most severe level
+shows. `richardson_lucy` is simpler to configure and looks cleanest to a human eye or a
+generic image-quality metric, and would be the reasonable choice if this were purely an
+image-quality task — it just isn't the best choice for *this* task. Which restoration
+method is "best" depends entirely on what you're optimizing for, and this project's own
+results disagree with themselves across metrics enough to make that concrete rather
+than abstract.
 
 ---
 
@@ -231,16 +321,18 @@ Full per-image, per-level data: `results/tables/full_results.csv` (4,650 rows).
    noise/color artifacts in ways that confuse the detector — a genuine, non-obvious
    result, not a bug.
 
-4. **Regularization strength matters as much as the restoration method itself.** The
-   first version of motion-blur restoration used a fixed Wiener deconvolution
-   regularization parameter, which worked for mild blur but caused severe ringing
-   artifacts at high severity (visibly broken output, and detection F1 *dropped* after
-   "restoration"). Scaling the regularization with blur severity (see §10) fixed
-   this: with a properly-tuned deconvolution, motion-blur restoration now
-   genuinely helps across every metric, including detection F1 (0.323→0.357). The
-   lesson: a restoration method can be theoretically correct (we used the *exact*
-   known blur kernel) and still fail badly if its hyperparameters aren't matched to
-   the severity range being restored.
+4. **The "cleanest-looking" restoration isn't always the best one.** Motion-blur
+   restoration was compared across three explicit methods (§7.1): Richardson-Lucy
+   produces the visually cleanest output and the best PSNR/stripe scores in several
+   conditions, but it's actually the **worst of the three for real detection
+   performance** (F1 0.291 — below even doing nothing at 0.323). The tuned-Wiener
+   approach, despite more residual visual artifact, gives the best detection F1
+   (0.357), genuinely beating the distorted baseline. The untuned/fixed-regularization
+   Wiener approach is the cautionary tale: fine at mild severity, but it nearly
+   destroys detection at the most severe level (F1 collapses to 0.017) from noise
+   amplification at the blur kernel's frequency-response nulls. No single quality
+   metric reliably predicted which method would actually help the downstream task —
+   which is the whole reason all three are reported here instead of just the winner.
 
 5. **Baseline domain gap.** Even on *clean* images, stock COCO-pretrained YOLOv8n only
    reaches F1=0.45 against BDD100K's real GT — expected, since BDD100K's camera
@@ -299,10 +391,27 @@ python finetune_run_v2.py        # trains + copies weights to models/yolov8n_fin
 python finetune_eval_fixed.py    # evaluates baseline vs. fine-tuned on the held-out set
 ```
 
+### Motion-blur restoration method comparison (§7.1 ablation study)
+```bash
+python compare_motion_blur_methods.py --batch_limit 150   # resumable, same pattern as run_full.py
+python make_comparison_figures.py
+```
+
 ### Regenerate all figures
 ```bash
 python make_figures.py
+python make_slide_figures.py
 ```
+
+### Regenerate the presentation
+```bash
+cd ../presentations
+python build_deck.py
+```
+Pure Python (`python-pptx`) — no Node.js/npm required. An earlier version of this
+project used `pptxgenjs` (Node.js) for finer control over shadows/gradients, but given
+everything else here is Python, that was an inconsistent dependency to ask for just to
+rebuild one file, so it was ported.
 
 ---
 
@@ -362,29 +471,47 @@ Fixed with `run_full.py`'s resumable batch design: each call processes a bounded
 of new images and checkpoints progress to disk, so the full run could be split across
 several sequential foreground calls without losing work.
 
-**8. A visibly broken restoration result caught during review.** The qualitative
-before/after figure showed severe periodic vertical-stripe artifacts in the "restored"
-motion-blur panel — not subtle, clearly wrong on visual inspection. Root cause: Wiener
-deconvolution's regularization parameter (`balance`) was fixed at a value tuned for
-mild blur; at severe blur (kernel=31px) the same value let noise get massively
-amplified at the blur kernel's near-zero frequency-response points, which for a purely
-horizontal kernel shows up as vertical striping in the spatial domain. Quantitatively,
-this wasn't just ugly — it was actively harmful: restored PSNR at the most severe level
-was *worse* than the distorted image's (16.2 dB vs. 25.0 dB), and it was quietly
-dragging down the aggregate numbers reported for motion-blur restoration. Fixed by
-scaling the regularization strength with kernel size (`balance` from 0.02 at the
-mildest level up to 1.5 at the most severe, tuned empirically against both PSNR and a
-simple "stripiness" proxy — the standard deviation of column-mean intensity, which
-spikes for periodic vertical artifacts). After the fix, restored PSNR at the most
-severe level improved to 23.5 dB (still short of "beating" the distorted image at that
-extreme, which is a believable limit for single-image deconvolution at that severity)
-and the visible artifacts were gone. This changed the motion-blur restoration numbers
-throughout §8 — the version of this README you're reading reflects the corrected run,
-not the original one. Worth calling out: the original (buggy) numbers had *higher* edge
-IoU and line IoU than the corrected ones (0.63 vs. 0.51, 0.49 vs. 0.40) — the ringing
-artifact was inventing spurious high-frequency structure that happened to inflate those
-particular metrics, which is itself a good reminder that a metric moving in a
-favorable direction isn't proof that something is actually working.
+**8. A visibly broken restoration result, chased across three attempts.** The
+qualitative before/after figure showed severe periodic vertical-stripe artifacts in the
+"restored" motion-blur panel — not subtle, clearly wrong on visual inspection. This
+turned into the most-revisited part of the whole project.
+
+*Attempt 1 (the bug)*: Wiener deconvolution's regularization parameter (`balance`) was
+fixed at a value tuned for mild blur; at severe blur (kernel=31px) that let noise get
+massively amplified at the blur kernel's near-zero frequency-response points, which for
+a purely horizontal kernel shows up as vertical striping in the spatial domain (see the
+frequency-domain explanation in §7.1). Quantitatively this wasn't just ugly — restored
+PSNR at the most severe level was *worse* than the distorted image's (16.2 dB vs. 25.0 dB).
+
+*Attempt 2 (tune the same method)*: scaling `balance` with kernel size (a hand-tuned
+lookup table) removed the visible artifacts and pushed PSNR to 23.5 dB at the most
+severe level — better, but still short of "beating" the distorted image there.
+
+*Attempt 3 (switch methods entirely)*: rather than tune further, Richardson-Lucy
+deconvolution was tried instead. On a single test image it appeared to beat the tuned
+Wiener approach outright — better PSNR *and* a cleaner stripe score at every severity
+level, with no per-level tuning needed. This became the production method for one
+round of results.
+
+*Then the full picture changed everything*: prompted to keep and compare all three
+attempts explicitly rather than just report the final one, a full comparison across
+all 150 images and all 5 severity levels (`compare_motion_blur_methods.py`,
+`results/tables/motion_blur_method_comparison.csv`) told a different story than the
+single-image test had. Richardson-Lucy's apparent win didn't hold up in aggregate: it
+turned out to have the **worst** detection F1 of the three methods (0.291, below even
+the distorted baseline's 0.323), despite genuinely being the cleanest by PSNR and
+stripe score in many conditions. The tuned-Wiener approach — the one abandoned in
+Attempt 3 for looking worse on a single image — actually had the best aggregate
+detection F1 of all three (0.357). It's now the production method (§7.1 has the full
+breakdown), and Richardson-Lucy is kept in the codebase as a documented alternative
+rather than deleted.
+
+The lesson generalizes beyond this one distortion: a single qualitative check (even a
+careful one) can point in the wrong direction, and "looks cleaner" / "better PSNR" /
+"better structural IoU" are all different things from "better for the actual task,"
+sometimes in direct conflict with each other. All three restoration variants are kept
+side by side in `restoration.py` specifically so this comparison stays reproducible
+rather than being a one-time observation that gets lost.
 
 ---
 
