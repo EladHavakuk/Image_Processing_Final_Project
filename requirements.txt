@@ -7,3 +7,4 @@ pandas>=2.0
 torch>=2.0
 torchvision>=0.15
 ultralytics>=8.2
+python-pptx>=1.0
