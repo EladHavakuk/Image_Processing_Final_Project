@@ -15,6 +15,7 @@ from pathlib import Path
 from ultralytics import YOLO
 
 from metrics import match_detections, precision_recall_f1
+import config
 
 # ----------------------------------------------------------------------
 # BDD100K (10 classes) -> COCO (80 classes) mapping.
@@ -38,7 +39,7 @@ EVAL_CLASSES = sorted(set(BDD_TO_COCO.values()))  # classes we actually score
 
 _model_cache = {}
 
-_DEFAULT_WEIGHTS = str(Path(__file__).resolve().parent.parent / "models" / "yolov8n.pt")
+_DEFAULT_WEIGHTS = str(config.BASELINE_WEIGHTS)
 
 
 def load_model(weights_path: str = _DEFAULT_WEIGHTS) -> YOLO:

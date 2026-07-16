@@ -6,8 +6,11 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-RESULTS_DIR = "/home/claude/project/results/tables"
-OUT_DIR = "/home/claude/project/presentations/assets"
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import config
+
+RESULTS_DIR = str(config.TABLES_DIR)
+OUT_DIR = str(config.PRESENTATION_ASSETS_DIR)
 Path(OUT_DIR).mkdir(parents=True, exist_ok=True)
 
 DIST_COLORS = {"compression": "#2E86AB", "lowlight": "#F5A623", "motion_blur": "#5B8C5A"}

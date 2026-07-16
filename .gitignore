@@ -5,6 +5,8 @@ __pycache__/
 .vscode/
 *.log
 .DS_Store
+.venv/
+venv/
 
 # training run artifacts (regenerable via finetune_run_v2.py)
 runs/

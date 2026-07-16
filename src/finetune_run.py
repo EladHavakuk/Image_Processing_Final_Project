@@ -15,10 +15,11 @@ from task_detection import load_bdd_labels, load_model, run_detection, evaluate_
 from distortions import apply_distortion, DISTORTION_NAMES, NUM_LEVELS, DISTORTION_LEVELS
 from metrics import compute_psnr
 from finetune_utils import build_finetune_set, write_data_yaml
+import config
 
-DATA_DIR = "/home/claude/project/data/raw/bdd_subset"
-FT_DIR = "/home/claude/project/data/finetune"
-RESULTS_DIR = "/home/claude/project/results/tables"
+DATA_DIR = str(config.DATA_DIR)
+FT_DIR = str(config.FINETUNE_DIR)
+RESULTS_DIR = str(config.TABLES_DIR)
 
 
 def main():
@@ -63,7 +64,7 @@ def main():
     best_weights = Path(model.trainer.best) if hasattr(model, "trainer") else Path(f"{FT_DIR}/runs/finetune/weights/best.pt")
     print("Fine-tuned weights at:", best_weights)
 
-    ft_model_path = "/home/claude/project/models/yolov8n_finetuned.pt"
+    ft_model_path = str(config.FINETUNED_WEIGHTS)
     shutil.copy(str(best_weights), ft_model_path)
 
     # ---- Evaluate BEFORE (baseline) vs AFTER (fine-tuned) on held-out distorted images ----

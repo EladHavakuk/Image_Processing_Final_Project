@@ -12,9 +12,10 @@ import matplotlib.pyplot as plt
 import cv2
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import config
 
-RESULTS_DIR = "/home/claude/project/results/tables"
-FIG_DIR = "/home/claude/project/results/figures"
+RESULTS_DIR = str(config.TABLES_DIR)
+FIG_DIR = str(config.FIGURES_DIR)
 Path(FIG_DIR).mkdir(parents=True, exist_ok=True)
 
 DIST_COLORS = {"compression": "#1f77b4", "lowlight": "#ff7f0e", "motion_blur": "#2ca02c"}
@@ -156,8 +157,7 @@ if __name__ == "__main__":
     ft_df = pd.read_csv(f"{RESULTS_DIR}/finetune_comparison.csv")
     plot_finetune_comparison(ft_df)
 
-    make_before_after_grid("/home/claude/project/data/raw/bdd_subset/images")
-    make_detection_overlay("/home/claude/project/data/raw/bdd_subset/images",
-                            "/home/claude/project/data/raw/bdd_subset/labels_subset.json")
+    make_before_after_grid(str(config.IMAGES_DIR))
+    make_detection_overlay(str(config.IMAGES_DIR), str(config.LABELS_PATH))
 
     print("All figures generated.")

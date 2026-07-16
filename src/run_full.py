@@ -17,10 +17,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from pipeline import load_images, run_full_pipeline
 from task_detection import load_bdd_labels
+import config
 
-DATA_DIR = "/home/claude/project/data/raw/bdd_subset"
-OUT_CSV = "/home/claude/project/results/tables/full_results.csv"
-PROGRESS_FILE = "/home/claude/project/results/tables/progress.txt"
+DATA_DIR = str(config.DATA_DIR)
+OUT_CSV = str(config.FULL_RESULTS_CSV)
+PROGRESS_FILE = str(config.PROGRESS_FILE)
 
 
 def main(batch_limit: int):

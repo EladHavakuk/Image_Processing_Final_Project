@@ -15,12 +15,13 @@ from pipeline import load_images
 from task_detection import load_bdd_labels, run_detection, evaluate_detection
 from distortions import apply_distortion, DISTORTION_NAMES, NUM_LEVELS, DISTORTION_LEVELS
 from metrics import compute_psnr
+import config
 
-DATA_DIR = "/home/claude/project/data/raw/bdd_subset"
-RESULTS_DIR = "/home/claude/project/results/tables"
+DATA_DIR = str(config.DATA_DIR)
+RESULTS_DIR = str(config.TABLES_DIR)
 
-BASELINE_WEIGHTS = "/home/claude/project/models/yolov8n.pt"
-FINETUNED_WEIGHTS = "/home/claude/project/models/yolov8n_finetuned.pt"
+BASELINE_WEIGHTS = str(config.BASELINE_WEIGHTS)
+FINETUNED_WEIGHTS = str(config.FINETUNED_WEIGHTS)
 
 
 def main():

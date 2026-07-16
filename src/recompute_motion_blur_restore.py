@@ -20,10 +20,11 @@ from restoration import restore
 from metrics import compute_psnr
 import task_edge_corner as tec
 import task_lines as tl
+import config
 
-DATA_DIR = "/home/claude/project/data/raw/bdd_subset"
-OUT_CSV = "/home/claude/project/results/tables/full_results.csv"
-TMP_CSV = "/home/claude/project/results/tables/_motion_blur_restored_new.csv"
+DATA_DIR = str(config.DATA_DIR)
+OUT_CSV = str(config.FULL_RESULTS_CSV)
+TMP_CSV = str(config.TABLES_DIR / "_motion_blur_restored_new.csv")
 
 
 def process_one(fname, clean, gt_objs, model):

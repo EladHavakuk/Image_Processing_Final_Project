@@ -20,9 +20,10 @@ from restoration import MOTION_BLUR_METHODS
 from metrics import compute_psnr, stripe_score
 import task_edge_corner as tec
 import task_lines as tl
+import config
 
-DATA_DIR = "/home/claude/project/data/raw/bdd_subset"
-OUT_CSV = "/home/claude/project/results/tables/motion_blur_method_comparison.csv"
+DATA_DIR = str(config.DATA_DIR)
+OUT_CSV = str(config.TABLES_DIR / "motion_blur_method_comparison.csv")
 
 
 def process_one(fname, clean, gt_objs, model):

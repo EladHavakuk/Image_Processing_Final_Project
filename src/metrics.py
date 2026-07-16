@@ -31,6 +31,18 @@ def compute_psnr(clean_rgb: np.ndarray, dist_rgb: np.ndarray) -> float:
 compute_snr = compute_psnr
 
 
+def stripe_score(img_rgb: np.ndarray) -> float:
+    """
+    Proxy for periodic ringing artifacts (e.g. from under-regularized Wiener
+    deconvolution of a horizontal blur kernel, which shows up as vertical banding):
+    standard deviation of the column-wise mean intensity's first difference. A clean
+    image has smoothly-varying column means; periodic banding spikes this value.
+    """
+    gray = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2GRAY).astype(np.float64)
+    col_means = gray.mean(axis=0)
+    return float(np.std(np.diff(col_means)))
+
+
 # ----------------------------------------------------------------------
 # Object detection metrics (uses real GT boxes)
 # ----------------------------------------------------------------------

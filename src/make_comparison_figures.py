@@ -11,9 +11,10 @@ import matplotlib.pyplot as plt
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from distortions import apply_distortion, DISTORTION_LEVELS
 from restoration import MOTION_BLUR_METHODS
+import config
 
-RESULTS_DIR = "/home/claude/project/results/tables"
-FIG_DIR = "/home/claude/project/results/figures"
+RESULTS_DIR = str(config.TABLES_DIR)
+FIG_DIR = str(config.FIGURES_DIR)
 Path(FIG_DIR).mkdir(parents=True, exist_ok=True)
 
 METHOD_COLORS = {
@@ -88,7 +89,7 @@ if __name__ == "__main__":
                           "Artifact severity by method", "mb_compare_stripe.png", log_y=True)
     plot_metric_vs_level(df, "det_f1", "Detection F1", "Downstream detection performance by method", "mb_compare_det_f1.png")
 
-    qualitative_grid("/home/claude/project/data/raw/bdd_subset/images")
+    qualitative_grid(str(config.IMAGES_DIR))
 
     # summary table
     summary = df.groupby("method")[["psnr", "stripe_score", "edge_iou", "line_iou", "det_f1"]].mean().round(3)

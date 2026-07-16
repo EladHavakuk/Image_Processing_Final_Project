@@ -22,12 +22,13 @@ from task_detection import load_bdd_labels, run_detection, evaluate_detection
 from distortions import apply_distortion, DISTORTION_NAMES, NUM_LEVELS, DISTORTION_LEVELS
 from metrics import compute_psnr
 from finetune_utils import build_finetune_set, write_data_yaml
+import config
 
-DATA_DIR = "/home/claude/project/data/raw/bdd_subset"
-FT_DIR = "/home/claude/project/data/finetune_v2"
-RESULTS_DIR = "/home/claude/project/results/tables"
-BASELINE_WEIGHTS = "/home/claude/project/models/yolov8n.pt"
-FINETUNED_WEIGHTS = "/home/claude/project/models/yolov8n_finetuned.pt"
+DATA_DIR = str(config.DATA_DIR)
+FT_DIR = str(config.FINETUNE_V2_DIR)
+RESULTS_DIR = str(config.TABLES_DIR)
+BASELINE_WEIGHTS = str(config.BASELINE_WEIGHTS)
+FINETUNED_WEIGHTS = str(config.FINETUNED_WEIGHTS)
 
 
 def main():

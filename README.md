@@ -30,6 +30,7 @@ below come from real runs on real driving-scene photos (BDD100K), not simulated 
 ├── requirements.txt
 ├── LICENSE
 ├── src/                          <- all pipeline code
+│   ├── config.py                  <- all paths, resolved relative to the repo (see §10)
 │   ├── distortions.py            <- 3 distortions x 5 severity levels
 │   ├── restoration.py            <- classical restoration per distortion (3 motion-blur variants kept side by side)
 │   ├── metrics.py                <- PSNR/SNR, detection P/R/F1, edge/line IoU, stripe/artifact score
@@ -368,12 +369,37 @@ manually-tuned rather than auto-selected learning rate.
 
 ### Setup
 ```bash
-pip install opencv-python-headless albumentations scikit-image ultralytics matplotlib pandas
+git clone <your-repo-url>
+cd <repo-folder>
+
+python -m venv .venv
+# Windows (Git Bash):        source .venv/Scripts/activate
+# Windows (PowerShell/cmd):  .venv\Scripts\activate
+# macOS/Linux:                source .venv/bin/activate
+
+pip install -r requirements.txt
 ```
-`yolov8n.pt` auto-downloads on first use in a normal (non-restricted) environment via
-`ultralytics.YOLO("yolov8n.pt")`. (In the sandbox this project was originally built in,
-that download was unexpectedly blocked by an egress proxy rule — see §10 — but this is
-a sandbox-specific quirk you should not hit on a normal machine.)
+
+Then confirm everything resolves correctly on your machine before running anything else:
+```bash
+cd src
+python config.py
+```
+This should print real, existing paths under wherever you cloned the repo — not
+`/home/claude/...` or anything from someone else's computer. If any path shows
+`exists: False`, check that `data/`, `models/`, and `results/` came through the
+clone/extraction intact (see §2 for the expected structure).
+
+All paths throughout this project are resolved relative to the repo's own location on
+disk (`src/config.py`, using `Path(__file__)`), not hardcoded — clone or extract this
+anywhere and every script finds its own data. (An earlier version of this codebase
+had ~9 files with absolute paths hardcoded to the sandbox it was originally built in;
+that's fixed now — see §10.)
+
+`yolov8n.pt` auto-downloads on first use via `ultralytics.YOLO("yolov8n.pt")` in any
+normal (non-restricted) environment. (In the sandbox this project was originally built
+in, that download was unexpectedly blocked by an egress proxy rule — see §10 — but
+that's a sandbox-specific quirk you should not hit on a normal machine.)
 
 ### Full pipeline (all 3 tasks, all distortions, clean/distorted/restored)
 ```bash
@@ -411,6 +437,7 @@ python build_deck.py
 Pure Python (`python-pptx`) — no Node.js/npm required. An earlier version of this
 project used `pptxgenjs` (Node.js) for finer control over shadows/gradients, but given
 everything else here is Python, that was an inconsistent dependency to ask for just to
+rebuild one file, so it was ported.
 rebuild one file, so it was ported.
 
 ---
@@ -512,6 +539,22 @@ careful one) can point in the wrong direction, and "looks cleaner" / "better PSN
 sometimes in direct conflict with each other. All three restoration variants are kept
 side by side in `restoration.py` specifically so this comparison stays reproducible
 rather than being a one-time observation that gets lost.
+
+**9. Hardcoded sandbox paths — the codebase didn't actually run anywhere else.**
+Every script that reads or writes data (`run_full.py`, `finetune_run.py`,
+`finetune_run_v2.py`, `finetune_eval_fixed.py`, `recompute_motion_blur_restore.py`,
+`compare_motion_blur_methods.py`, `make_figures.py`, `make_slide_figures.py`,
+`make_comparison_figures.py` — 9 files, 31 occurrences) had absolute paths like
+`/home/claude/project/data/...` hardcoded in, because that's where this project
+happened to live while it was being built. That path doesn't exist on any other
+computer, so none of these scripts could actually run after a fresh clone — a real bug,
+not a style issue, and the kind that's easy to miss when everything "works" in the
+one environment it was written in. Fixed by adding `src/config.py`, which derives every
+path from its own location on disk (`Path(__file__).resolve().parent.parent`), and
+updating every script to import paths from there instead of hardcoding them. Verified
+by copying the entire project to an arbitrary, differently-named directory and
+confirming the full pipeline still runs correctly end-to-end with zero code changes —
+that's the actual bar for "portable," not just "no red underlines in an editor."
 
 ---
 
