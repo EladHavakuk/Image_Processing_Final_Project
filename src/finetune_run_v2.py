@@ -81,10 +81,19 @@ def main():
     baseline_model = YOLO(BASELINE_WEIGHTS)
     finetuned_model = YOLO(FINETUNED_WEIGHTS)
 
+    # Sanity check: compare across ALL named parameters, not just one. Checking a
+    # single parameter (e.g. the first) is unreliable here because training used
+    # freeze=10 (frozen backbone) plus YOLOv8's structurally-fixed DFL layer -- both
+    # are legitimately identical between baseline and fine-tuned even when training
+    # worked correctly, so a single-parameter check produces a false "bug" failure.
+    # (This exact mistake was already made and fixed once in finetune_eval_fixed.py;
+    # this copy of the check was never updated to match -- see README troubleshooting log.)
     import torch
-    p1 = next(baseline_model.model.parameters())
-    p2 = next(finetuned_model.model.parameters())
-    assert not torch.equal(p1, p2), "models identical - bug"
+    np1 = dict(baseline_model.model.named_parameters())
+    np2 = dict(finetuned_model.model.named_parameters())
+    n_changed = sum(1 for k in np1 if not torch.equal(np1[k], np2[k]))
+    print(f"Confirmed: {n_changed}/{len(np1)} parameter tensors changed after fine-tuning.")
+    assert n_changed > 0, "models identical - bug"
 
     rows = []
     for i, (fname, clean) in enumerate(holdout_images.items()):
