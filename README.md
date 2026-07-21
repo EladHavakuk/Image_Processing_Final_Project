@@ -186,7 +186,7 @@ severity levels × 2 stages [distorted, restored]) → **4,650 result rows** in
 *Canny edge detection* (`cv2.Canny`) proceeds in four steps: (1) Gaussian smoothing
 $I_s = I * G_\sigma$ to suppress noise; (2) gradient estimation via Sobel kernels,
 giving magnitude $M(x,y)=\sqrt{G_x^2+G_y^2}$ and direction
-$\theta(x,y)=\operatorname{atan2}(G_y,G_x)$; (3) non-maximum suppression, keeping a
+$\theta(x,y)=\text{atan2}(G_y,G_x)$; (3) non-maximum suppression, keeping a
 pixel only if $M$ is a local maximum along $\theta$; (4) hysteresis thresholding with
 two thresholds $T_{low} < T_{high}$ — pixels above $T_{high}$ are edges, pixels between
 the two thresholds are edges only if connected to a pixel already accepted.
@@ -194,18 +194,18 @@ the two thresholds are edges only if connected to a pixel already accepted.
 *Shi-Tomasi corners* (`cv2.goodFeaturesToTrack`) use the local structure tensor over a
 window $\Omega$:
 
-$$M(x,y) = \sum_{\Omega} \begin{bmatrix} I_x^2 & I_xI_y \\ I_xI_y & I_y^2 \end{bmatrix}$$
+$$M(x,y) = \sum_{\Omega} \begin{pmatrix} I_x^2 & I_xI_y \\ I_xI_y & I_y^2 \end{pmatrix}$$
 
 with eigenvalues $\lambda_1, \lambda_2$. A point is a corner if
 $R = \min(\lambda_1, \lambda_2)$ exceeds a threshold — both principal curvatures must
 be large, unlike an edge (one large, one near zero) or a flat region (both near zero).
-(Harris' corner detector uses $R = \det(M) - k \cdot \operatorname{trace}(M)^2$
+(Harris' corner detector uses $R = \det(M) - k \cdot \text{trace}(M)^2$
 instead; Shi-Tomasi's criterion is what OpenCV implements here.)
 
 *ORB* (`cv2.ORB_create`) combines: FAST keypoint detection (a pixel $p$ is a corner
 candidate if $\geq 9$ contiguous pixels on a radius-3 Bresenham circle around it are
 all brighter than $I(p)+t$ or all darker than $I(p)-t$); an orientation estimate from
-the intensity centroid ($\theta = \operatorname{atan2}(m_{01}, m_{10})$, where
+the intensity centroid ($\theta = \text{atan2}(m_{01}, m_{10})$, where
 $m_{pq}=\sum x^p y^q I(x,y)$ are patch moments); and rotated BRIEF, a 256-bit binary
 descriptor from pairwise intensity comparisons at the patch orientation. Matching uses
 Hamming distance between descriptors.
@@ -215,7 +215,7 @@ the **clean image's own output** as a reference:
 - **Edge IoU**: rasterize both Canny edge maps to binary masks $A$ (clean) and $B$
   (distorted/restored), dilate slightly to tolerate sub-pixel shifts, then
   $\text{IoU}(A,B) = |A \cap B| / |A \cup B|$.
-- **Corner count ratio**: $\#\text{corners(other)} / \#\text{corners(clean)}$.
+- **Corner count ratio**: $n_{\text{corners}}(\text{other}) / n_{\text{corners}}(\text{clean})$.
 - **ORB match ratio**: fraction of clean-image keypoints with a good Hamming-distance
   descriptor match in the other image.
 
@@ -272,6 +272,15 @@ are mapped and the rest dropped:
 | traffic light | traffic light |
 | traffic sign | *(dropped — no COCO equivalent)* |
 
+**All three tasks, on four different clean images:**
+
+![Clean image gallery with all 3 tasks](results/figures/gallery_clean_tasks.png)
+*Each row is a different image from the dataset. Left to right: the clean photo,
+Canny edges (white) with Shi-Tomasi corners (green dots), Hough-detected lines
+(magenta), and YOLOv8n detections (green boxes with class + confidence). This is the
+baseline every distortion/restoration number in [§5](#5-results) is measured against —
+worth looking at before seeing what distortion does to it.*
+
 ### 4.3 Distortions
 
 All three are directly relevant to driving/dashcam footage. Each has 5 fixed severity
@@ -300,6 +309,21 @@ material, generalized here from the pure-additive-noise case (where it was origi
 defined) to any pixel-domain distortion — compression and blur aren't additive noise,
 but the same ratio-of-powers logic still quantifies how far a distorted image is from
 the clean reference.
+
+**Severity progression, one distortion at a time** (clean, then levels 0–4 in order):
+
+![Compression severity progression](results/figures/severity_progression_compression.png)
+*JPEG compression: mild levels are barely visible; by level 3–4 blocking artifacts and
+color banding (visible in the sky) become obvious.*
+
+![Low-light severity progression](results/figures/severity_progression_lowlight.png)
+*Low-light: brightness drops steeply even by level 1–2, and by level 3–4 most of the
+frame is close to pure black — this is why detection collapses so early for this
+distortion (see [§5.3](#53-key-findings)).*
+
+![Motion blur severity progression](results/figures/severity_progression_motion_blur.png)
+*Motion blur: the kernel length increases from 5px to 31px — by the last level, edges
+that were sharp in the clean image are smeared well beyond recognition.*
 
 **Visual example** (most severe level of each distortion, plus restoration):
 
@@ -345,6 +369,21 @@ above the clip limit are redistributed across the histogram — which exists spe
 to prevent noise over-amplification in flat/noisy regions. As
 [§5.3, finding 3](#53-key-findings) shows, that safeguard doesn't fully prevent it on
 the most severely underexposed images in this dataset.
+
+**Restoration in practice, multiple images and severities** (compression and
+low-light; motion blur gets its own full comparison in [§4.5](#45-restoration-method-comparison-motion-blur)):
+
+![Compression restoration grid](results/figures/restoration_grid_compression.png)
+*Two images, at severity levels 1 (mild) and 3 (severe). Deblocking is subtle at every
+level by design — it's meant to smooth blocking artifacts, not add detail — but the
+difference is visible on close inspection at level 3.*
+
+![Low-light restoration grid](results/figures/restoration_grid_lowlight.png)
+*Same two images, low-light levels 1 and 3. Restoration clearly recovers visible
+brightness and structure at both levels — a much bigger visual change than the
+compression case above. Whether that visual improvement translates to better
+detection is a separate question, answered (not favorably) in
+[§5.4](#54-verifying-the-counter-intuitive-results).*
 
 **Task overlay example** (edges/corners and lines, clean vs. severely motion-blurred):
 
@@ -522,6 +561,25 @@ only chart on this page backed by an annotated answer key rather than a
 clean-image-as-reference proxy. This is the chart the findings below are mainly
 about.*
 
+**Qualitative view: the same story, seen directly on an image rather than as a curve.**
+One image with 8 clean-baseline detections, run through all 5 severity levels of each
+distortion:
+
+![Detection across severity: compression](results/figures/detection_across_severity_compression.png)
+*8 detections on the clean image drop to 2 by the most severe compression level —
+mostly the smaller/more distant objects lose their boxes first as detail degrades.*
+
+![Detection across severity: low-light](results/figures/detection_across_severity_lowlight.png)
+*The steepest collapse of the three: down to 1 detection by level 1 and zero from
+level 2 onward — consistent with the robustness curve above showing low-light as the
+most damaging distortion for this task.*
+
+![Detection across severity: motion blur](results/figures/detection_across_severity_motion_blur.png)
+*A less monotonic pattern than the other two (10 detections at level 1, actually more
+than the clean baseline's 8, before dropping to 3 by level 3-4) — a reminder that
+these are real per-image numbers, not a smoothed trend; the aggregate curve above is
+what should be trusted for the overall pattern, not any single image.*
+
 ### 5.3 Key findings
 
 1. **Clear degradation with severity.** All three tasks degrade monotonically as SNR
@@ -566,7 +624,7 @@ mild and severe levels before trusting any downstream number.
 
 **What's actually happening: both cases are noise/artifact amplification, confirmed
 quantitatively, not asserted.** The check used is the Laplacian variance of the
-grayscale image, $\operatorname{Var}(\nabla^2 I)$ — a standard focus/noise proxy: real
+grayscale image, $\text{Var}(\nabla^2 I)$ — a standard focus/noise proxy: real
 image detail and injected noise both increase it, but injected noise increases it
 *without* corresponding real structure.
 
@@ -781,7 +839,8 @@ placed at the end: the code is the *means* by which the results in
 │   ├── finetune_eval_fixed.py       <- corrected baseline-vs-finetuned evaluation
 │   ├── make_figures.py              <- generates the main report figures
 │   ├── make_slide_figures.py        <- slide-optimized versions of the key charts
-│   └── make_comparison_figures.py   <- §4.5 ablation study figures
+│   ├── make_comparison_figures.py   <- §4.5 ablation study figures
+│   └── make_gallery_figures.py      <- clean/task galleries, severity progressions, detection-across-severity, restoration grids
 ├── data/
 │   └── raw/bdd_subset/
 │       ├── images/                  <- 150 BDD100K images
@@ -925,6 +984,7 @@ python make_comparison_figures.py
 ```bash
 python make_figures.py
 python make_slide_figures.py
+python make_gallery_figures.py
 ```
 
 #### Regenerate the presentation
