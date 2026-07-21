@@ -15,7 +15,10 @@ clean-image baseline. Motion-blur restoration is further broken out into an expl
 three-method comparison (two Wiener-deconvolution variants and Richardson-Lucy),
 because no single image-quality metric agreed with the others on which method actually
 helped the downstream task — a result treated as a finding in its own right rather
-than smoothed over. All numbers in this document come from real runs on real data; none
+than smoothed over. The report is organized around what was actually found: the
+visual effect of each distortion and restoration on real images, the measured
+numbers behind those effects, and the mathematics of the algorithms that produced
+them. All numbers and figures in this document come from real runs on real data; none
 are simulated or illustrative placeholders.
 
 ---
@@ -23,25 +26,28 @@ are simulated or illustrative placeholders.
 ## Table of Contents
 
 1. [Introduction](#1-introduction)
-2. [Environment and Setup](#2-environment-and-setup)
-3. [Usage](#3-usage)
-4. [Repository Structure](#4-repository-structure)
-5. [Dataset](#5-dataset)
-6. [Methodology](#6-methodology)
-   - [6.1 Pipeline Architecture](#61-pipeline-architecture)
-   - [6.2 Tasks](#62-tasks)
-   - [6.3 Distortions](#63-distortions)
-   - [6.4 Restoration Methods](#64-restoration-methods)
-   - [6.5 Restoration Method Comparison (Motion Blur)](#65-restoration-method-comparison-motion-blur)
-   - [6.6 Fine-Tuning](#66-fine-tuning)
-7. [Results](#7-results)
-   - [7.1 Summary Table](#71-summary-table)
-   - [7.2 Robustness Curves](#72-robustness-curves)
-   - [7.3 Key Findings](#73-key-findings)
-   - [7.4 Fine-Tuning Results](#74-fine-tuning-results)
-8. [Limitations](#8-limitations)
-9. [Development Log](#9-development-log)
-10. [Credits and License](#10-credits-and-license)
+2. [Project Pipeline](#2-project-pipeline)
+3. [Dataset](#3-dataset)
+4. [Methodology](#4-methodology)
+   - [4.1 Pipeline Architecture](#41-pipeline-architecture)
+   - [4.2 Tasks](#42-tasks)
+   - [4.3 Distortions](#43-distortions)
+   - [4.4 Restoration Methods](#44-restoration-methods)
+   - [4.5 Restoration Method Comparison (Motion Blur)](#45-restoration-method-comparison-motion-blur)
+   - [4.6 Fine-Tuning](#46-fine-tuning)
+5. [Results](#5-results)
+   - [5.1 Summary Table](#51-summary-table)
+   - [5.2 Robustness Curves](#52-robustness-curves)
+   - [5.3 Key Findings](#53-key-findings)
+   - [5.4 Verifying the Counter-Intuitive Results](#54-verifying-the-counter-intuitive-results)
+   - [5.5 Fine-Tuning Results](#55-fine-tuning-results)
+6. [Limitations](#6-limitations)
+7. [Development Log](#7-development-log)
+8. [Reproducing This Project](#8-reproducing-this-project)
+   - [8.1 Repository Structure](#81-repository-structure)
+   - [8.2 Environment and Setup](#82-environment-and-setup)
+   - [8.3 Usage](#83-usage)
+9. [Credits and License](#9-credits-and-license)
 
 ---
 
@@ -57,209 +63,78 @@ help?** Rather than assume the answers, everything here is measured directly.
 
 | # | Aspect | Choice | Rationale |
 |---|--------|--------|-----------|
-| 1 | Dataset | [BDD100K](https://doc.bdd100k.com/), 150-image subset (`train` split) | Real driving footage with genuine detection ground truth; see [§5](#5-dataset) |
-| 2 | Tasks | Edge/Corner detection, Line detection, Object detection | 2 low-level (classical) + 1 high-level (DL); see [§6.2](#62-tasks) |
+| 1 | Dataset | [BDD100K](https://doc.bdd100k.com/), 150-image subset (`train` split) | Real driving footage with genuine detection ground truth; see [§3](#3-dataset) |
+| 2 | Tasks | Edge/Corner detection, Line detection, Object detection | 2 low-level (classical) + 1 high-level (DL); see [§4.2](#42-tasks) |
 | 3 | Methods | Canny + Shi-Tomasi/ORB, Canny + Hough Transform, YOLOv8n | Existing, standard library implementations only |
-| 4 | Distortions | JPEG compression, low-light, motion blur | Directly relevant to dashcam/driving conditions; see [§6.3](#63-distortions) |
-| 5 | Severity | 5 calibrated levels per distortion, measured in PSNR (dB) | See [§6.3](#63-distortions) |
-| 6 | Restoration | Bilateral deblocking, Gamma+CLAHE, Wiener deconvolution (tuned) | See [§6.4](#64-restoration-methods)–[§6.5](#65-restoration-method-comparison-motion-blur) |
-| 7 | Fine-tuning | YOLOv8n only | The classical tasks have no trainable weights; see [§6.6](#66-fine-tuning) |
+| 4 | Distortions | JPEG compression, low-light, motion blur | Directly relevant to dashcam/driving conditions; see [§4.3](#43-distortions) |
+| 5 | Severity | 5 calibrated levels per distortion, measured in PSNR (dB) | See [§4.3](#43-distortions) |
+| 6 | Restoration | Bilateral deblocking, Gamma+CLAHE, Wiener deconvolution (tuned) | See [§4.4](#44-restoration-methods)–[§4.5](#45-restoration-method-comparison-motion-blur) |
+| 7 | Fine-tuning | YOLOv8n only | The classical tasks have no trainable weights; see [§4.6](#46-fine-tuning) |
+
+The full pipeline this project implements is laid out next, in [§2](#2-project-pipeline), before any methodology detail — it's the shape everything else in this document hangs off of.
 
 ---
 
-## 2. Environment and Setup
+## 2. Project Pipeline
 
-This section covers everything needed to get the code running on a fresh machine.
-Read this before anything else if you're cloning this repository for the first time.
+Every one of the 150 images in this project moves through the same seven-stage
+pipeline. This is the shape of the whole project — the rest of this document
+(Methodology, Results) is organized around these stages in order.
 
-### 2.1 Tested configuration
-
-| Component | Tested value(s) |
-|---|---|
-| OS | Developed on Linux (Ubuntu-based); confirmed working on Windows 10/11 |
-| Python | 3.12 (primary development/test target); confirmed also working on 3.14 |
-| Hardware | CPU-only — no GPU/CUDA required (see [§2.4](#24-hardware-notes)) |
-| CPU used in testing | Intel Xeon (development), Intel Core i9-11900K (Windows verification) |
-
-This project has **no GPU dependency**. Every result in this README was produced on
-CPU. If your machine happens to have a CUDA-capable GPU, `ultralytics` will use it
-automatically for inference without any code changes; fine-tuning explicitly forces
-`device="cpu"` for portability (see [§6.6](#66-fine-tuning)) and would need a one-line
-edit in `finetune_run_v2.py` to opt into GPU training.
-
-### 2.2 Software requirements
-
-- **Python 3.10–3.12 recommended** (this is the range `ultralytics`/`torch` officially
-  target at time of writing). Newer versions may work — 3.14 has been confirmed to run
-  this project successfully — but are outside the primary tested range, so if you hit
-  an obscure dependency error on a very new Python version, trying 3.12 is a reasonable
-  first troubleshooting step.
-- All Python package dependencies are pinned to minimum versions in `requirements.txt`:
-  `opencv-python-headless`, `numpy`, `albumentations`, `scikit-image`, `matplotlib`,
-  `pandas`, `torch`, `torchvision`, `ultralytics`, `python-pptx`.
-- No system-level dependencies beyond Python itself (no `ffmpeg`, no CUDA toolkit, no
-  compiler toolchain required — all packages above ship prebuilt wheels for
-  Windows/macOS/Linux).
-- **Internet access is required** for the initial `pip install` and for `ultralytics`
-  to auto-download the pretrained `yolov8n.pt` COCO weights (~6 MB) the first time any
-  script runs.
-
-### 2.3 Installation
-
-```bash
-git clone <your-repo-url>
-cd <repo-folder>
-
-python -m venv .venv
-
-# activate the virtual environment:
-#   Windows, Git Bash:        source .venv/Scripts/activate
-#   Windows, PowerShell/cmd:  .venv\Scripts\activate
-#   macOS / Linux:             source .venv/bin/activate
-
-pip install -r requirements.txt
+```
+                 Clean Images
+                      │
+                      ▼
+             Baseline Evaluation
+                      │
+      ┌───────────────┼───────────────┐
+      ▼               ▼               ▼
+ Compression      Low Light      Motion Blur
+      │               │               │
+      ▼               ▼               ▼
+   Evaluation     Evaluation     Evaluation
+      │               │               │
+      └───────────────┼───────────────┘
+                      ▼
+              Image Restoration
+                      │
+                      ▼
+             Evaluation Again
+                      │
+                      ▼
+          Fine-tuned YOLOv8 Models
+                      │
+                      ▼
+            Final Performance Comparison
 ```
 
-Then, before running anything else, verify the environment resolves correctly:
+**What happens at each stage:**
 
-```bash
-cd src
-python config.py
-```
+| Stage | What happens | Where it's covered |
+|---|---|---|
+| **Clean images** | 150 real driving photos (BDD100K), no modification | [§3 Dataset](#3-dataset) |
+| **Baseline evaluation** | All 3 tasks (edge/corner, line, object detection) run on the clean images — this is the reference every later number is measured against | [§4.2 Tasks](#42-tasks) |
+| **Compression / Low Light / Motion Blur** | Each clean image is degraded three separate ways, five severity levels each | [§4.3 Distortions](#43-distortions) |
+| **Evaluation** (per distortion) | All 3 tasks re-run on every distorted image, compared back to the clean baseline | [§5.1](#51-summary-table), [§5.2](#52-robustness-curves) |
+| **Image restoration** | A classical restoration method matched to each distortion attempts to undo the damage | [§4.4](#44-restoration-methods), [§4.5](#45-restoration-method-comparison-motion-blur) |
+| **Evaluation again** | All 3 tasks re-run on the *restored* images, to see how much of the lost performance came back | [§5.1](#51-summary-table), [§5.3](#53-key-findings) |
+| **Fine-tuned YOLOv8 models** | The object detector is fine-tuned directly on distorted images and re-evaluated on a held-out set | [§4.6 Fine-tuning](#46-fine-tuning), [§5.5](#55-fine-tuning-results) |
+| **Final performance comparison** | Clean vs. distorted vs. restored vs. fine-tuned, side by side, per task, per distortion, per severity level | [§5 Results](#5-results) |
 
-This prints every key path the project uses (`PROJECT_ROOT`, `IMAGES_DIR`,
-`LABELS_PATH`, `BASELINE_WEIGHTS`, `TABLES_DIR`, `FIGURES_DIR`) along with whether each
-one actually exists on disk. All paths are resolved **relative to the repository's own
-location** (`src/config.py`, via `Path(__file__)`) — never hardcoded to any specific
-machine or username. If everything shows `exists: True`, you're ready to run anything
-in [§3](#3-usage). If something shows `exists: False`, the clone/extraction likely
-didn't bring over the `data/`, `models/`, or `results/` folders intact — check against
-the structure in [§4](#4-repository-structure).
+Two things worth flagging about this diagram up front, both explained in full later:
 
-### 2.4 Hardware notes
-
-- **CPU is sufficient for everything in this repo.** The full 150-image pipeline run
-  takes roughly 10–15 seconds/image on a typical modern CPU (~25–35 minutes total);
-  fine-tuning (8 epochs on ~40–90 small images) takes well under 5 minutes.
-- **RAM**: no unusual requirements — a machine that can run a modern web browser
-  comfortably (8 GB+) is sufficient. Nothing here loads the full BDD100K dataset or a
-  large model into memory at once.
-- **Disk space**: the repository itself is roughly 35–40 MB (mostly the 150 sample
-  images and two small YOLO checkpoints). A fresh virtual environment with all
-  dependencies installed (largely `torch`) typically needs on the order of 2–3 GB.
-
-### 2.5 Known environment-specific issues
-
-A few real issues were hit and fixed while developing and verifying this project on
-different machines — kept here for quick reference (see [§9](#9-development-log) for
-the full story of each):
-
-- **Windows path strings in Python** (`SyntaxError: unicodeescape ... can't decode
-  bytes`): caused by an unescaped `\U` or similar in a plain Windows path string being
-  parsed as a Unicode escape. Use raw strings (`r"C:\Users\..."`) or forward slashes.
-- **PyCharm `CreateProcess error=2`**: the run configuration's Python interpreter
-  points at a venv from an unrelated project. Fix via
-  `Settings → Python | Interpreter → Add Local Interpreter → New environment`.
-- **Absolute paths hardcoded to a different machine**: fixed in the codebase itself
-  (`src/config.py`) — should not recur, but if you fork/modify scripts, avoid
-  reintroducing hardcoded absolute paths for exactly this reason.
+- The two classical tasks (edge/corner, line detection) have no ground truth to
+  compare against, so their "evaluation" boxes measure robustness against the *clean
+  image's own output* rather than an annotated answer key. Object detection is scored
+  against real BDD100K ground-truth boxes instead. Both are explained in
+  [§4.2](#42-tasks).
+- "Image restoration" is not one fixed method for motion blur — three different
+  restoration algorithms were tried and are compared explicitly, because the choice
+  turned out to matter more than expected. See [§4.5](#45-restoration-method-comparison-motion-blur).
 
 ---
 
-## 3. Usage
-
-All commands below assume an activated virtual environment and `cd src` (i.e. run from
-inside the repository's `src/` folder), unless otherwise noted.
-
-### 3.1 Full pipeline (all 3 tasks × all distortions × clean/distorted/restored)
-
-```bash
-python run_full.py --batch_limit 150
-```
-
-Processes all 150 images through every stage and writes
-`results/tables/full_results.csv`. This is **resumable** — it checks the output CSV for
-already-processed images and skips them — so it's safe to run in smaller batches
-(e.g. `--batch_limit 20`, repeated) if you'd rather not commit to one long run.
-
-### 3.2 Fine-tuning (Stage 4)
-
-```bash
-python finetune_run_v2.py        # trains + copies weights to models/yolov8n_finetuned.pt
-python finetune_eval_fixed.py    # evaluates baseline vs. fine-tuned on the held-out set
-```
-
-### 3.3 Motion-blur restoration method comparison (§6.5)
-
-```bash
-python compare_motion_blur_methods.py --batch_limit 150   # resumable, same pattern as run_full.py
-python make_comparison_figures.py
-```
-
-### 3.4 Regenerate figures
-
-```bash
-python make_figures.py
-python make_slide_figures.py
-```
-
-### 3.5 Regenerate the presentation
-
-```bash
-cd ../presentations
-python build_deck.py
-```
-
-Pure Python (`python-pptx`) — no Node.js/npm needed.
-
----
-
-## 4. Repository Structure
-
-```
-├── README.md                      <- this file
-├── requirements.txt
-├── LICENSE
-├── src/                            <- all pipeline code
-│   ├── config.py                    <- all paths, resolved relative to the repo (see §9)
-│   ├── distortions.py               <- 3 distortions x 5 severity levels
-│   ├── restoration.py               <- classical restoration per distortion (3 motion-blur variants kept side by side)
-│   ├── metrics.py                   <- PSNR/SNR, detection P/R/F1, edge/line IoU, stripe/artifact score
-│   ├── task_edge_corner.py          <- Task 1 (low-level, classical)
-│   ├── task_lines.py                <- Task 2 (low-level, classical)
-│   ├── task_detection.py            <- Task 3 (high-level, DL) + BDD100K GT loader
-│   ├── pipeline.py                  <- orchestrates all 3 tasks x all distortions x all stages
-│   ├── run_full.py                  <- resumable batch runner (used to process all 150 images)
-│   ├── recompute_motion_blur_restore.py <- targeted recompute after restoration.py changes
-│   ├── compare_motion_blur_methods.py   <- §6.5 ablation study across all 3 restoration methods
-│   ├── finetune_utils.py            <- BDD100K GT -> YOLO label format conversion
-│   ├── finetune_run.py              <- Stage 4, attempt 1 (see §9)
-│   ├── finetune_run_v2.py           <- Stage 4, attempt 2 (frozen backbone, no mosaic) — production
-│   ├── finetune_eval_fixed.py       <- corrected baseline-vs-finetuned evaluation
-│   ├── make_figures.py              <- generates the main report figures
-│   ├── make_slide_figures.py        <- slide-optimized versions of the key charts
-│   └── make_comparison_figures.py   <- §6.5 ablation study figures
-├── data/
-│   └── raw/bdd_subset/
-│       ├── images/                  <- 150 BDD100K images
-│       └── labels_subset.json       <- matching detection GT (filtered from the ~1GB full file)
-├── models/
-│   ├── yolov8n.pt                   <- pretrained COCO weights (baseline)
-│   └── yolov8n_finetuned.pt         <- fine-tuned on distorted images (Stage 4)
-├── results/
-│   ├── tables/                      <- all raw + summary CSVs
-│   └── figures/                     <- all plots (referenced throughout this README)
-├── presentations/
-│   ├── build_deck.py                <- builds the final PPTX (pure Python, python-pptx)
-│   ├── vision_robustness_presentation.pptx
-│   └── assets/                      <- figures embedded in the deck
-└── docs/
-    └── (this README is the primary report)
-```
-
----
-
-## 5. Dataset
+## 3. Dataset
 
 This project uses a **150-image subset of BDD100K** (`train` split), with matching
 detection labels. BDD100K was chosen after two other candidates turned out to be
@@ -268,7 +143,7 @@ impractical:
 - **Cityscapes**: requires a login-gated download with no way to script around it.
 - **KITTI**: the same login requirement applies to the packages needed here.
 - **BDD100K**: also login-gated for bulk download, but a subset downloaded locally is
-  trivial to filter and hand off — see [§9](#9-development-log) for exactly how this
+  trivial to filter and hand off — see [§7](#7-development-log) for exactly how this
   was done, including filtering a ~1 GB label file down to what was actually needed.
 
 **GT sanity check.** Before trusting the label file, its boxes were rendered onto a
@@ -279,7 +154,7 @@ sample image to visually confirm the coordinates line up correctly:
 under severe low-light distortion (right).*
 
 **Class distribution** in this 150-image subset (after mapping BDD100K's 10 classes
-onto COCO's 80 — see [§6.2](#62-tasks)):
+onto COCO's 80 — see [§4.2](#42-tasks)):
 
 | Class | Instances |
 |---|---|
@@ -290,52 +165,97 @@ onto COCO's 80 — see [§6.2](#62-tasks)):
 | person | 13 |
 
 The imbalance (dominated by cars/traffic lights; zero bicycle/motorcycle/train
-instances) is a known limitation of a 150-image sample — see [§8](#8-limitations).
+instances) is a known limitation of a 150-image sample — see [§6](#6-limitations).
 
 ---
 
-## 6. Methodology
+## 4. Methodology
 
-### 6.1 Pipeline architecture
+### 4.1 Pipeline architecture
 
-Every image passes through the same four stages, evaluated on all 3 tasks:
+The full pipeline diagram and stage-by-stage explanation is in
+[§2](#2-project-pipeline). In numbers: 150 images × (1 clean + 3 distortions × 5
+severity levels × 2 stages [distorted, restored]) → **4,650 result rows** in
+`results/tables/full_results.csv`, plus the separate fine-tuning evaluation
+([§4.6](#46-fine-tuning), [§5.5](#55-fine-tuning-results)).
 
-```
-CLEAN IMAGE
-    │
-    ├── Stage 1: baseline (clean) evaluation
-    │
-    ├── Stage 2: apply distortion (3 types x 5 severity levels) → evaluate
-    │
-    ├── Stage 3: apply classical restoration to the distorted image → evaluate
-    │
-    └── Stage 4: (object detection only) fine-tune YOLOv8n on distorted images,
-                  re-evaluate on a held-out distorted set
-```
+### 4.2 Tasks
 
-150 images × (1 clean + 3 distortions × 5 levels × 2 stages [distorted, restored])
-→ **4,650 result rows** in `results/tables/full_results.csv`.
+**Edge/Corner detection** (low-level, classical).
 
-### 6.2 Tasks
+*Canny edge detection* (`cv2.Canny`) proceeds in four steps: (1) Gaussian smoothing
+$I_s = I * G_\sigma$ to suppress noise; (2) gradient estimation via Sobel kernels,
+giving magnitude $M(x,y)=\sqrt{G_x^2+G_y^2}$ and direction
+$\theta(x,y)=\operatorname{atan2}(G_y,G_x)$; (3) non-maximum suppression, keeping a
+pixel only if $M$ is a local maximum along $\theta$; (4) hysteresis thresholding with
+two thresholds $T_{low} < T_{high}$ — pixels above $T_{high}$ are edges, pixels between
+the two thresholds are edges only if connected to a pixel already accepted.
 
-**Edge/Corner detection** (low-level, classical) — `cv2.Canny` for edges,
-`cv2.goodFeaturesToTrack` (Shi-Tomasi) + `cv2.ORB_create` for corners/keypoints. No
-ground truth exists for "correct" edges/corners, so robustness is measured against the
-**clean image's own output** as a reference:
-- Edge IoU: rasterized Canny edge maps, dilated slightly, IoU against the clean edge map
-- Corner count ratio: `#corners(distorted) / #corners(clean)`
-- ORB match ratio: fraction of clean keypoints with a good descriptor match in the distorted image
+*Shi-Tomasi corners* (`cv2.goodFeaturesToTrack`) use the local structure tensor over a
+window $\Omega$:
 
-**Line detection** (low-level, classical) — `cv2.Canny` → `cv2.HoughLinesP`
-(probabilistic Hough transform), aimed at lane/road structure. This replaced an
+$$M(x,y) = \sum_{\Omega} \begin{bmatrix} I_x^2 & I_xI_y \\ I_xI_y & I_y^2 \end{bmatrix}$$
+
+with eigenvalues $\lambda_1, \lambda_2$. A point is a corner if
+$R = \min(\lambda_1, \lambda_2)$ exceeds a threshold — both principal curvatures must
+be large, unlike an edge (one large, one near zero) or a flat region (both near zero).
+(Harris' corner detector uses $R = \det(M) - k \cdot \operatorname{trace}(M)^2$
+instead; Shi-Tomasi's criterion is what OpenCV implements here.)
+
+*ORB* (`cv2.ORB_create`) combines: FAST keypoint detection (a pixel $p$ is a corner
+candidate if $\geq 9$ contiguous pixels on a radius-3 Bresenham circle around it are
+all brighter than $I(p)+t$ or all darker than $I(p)-t$); an orientation estimate from
+the intensity centroid ($\theta = \operatorname{atan2}(m_{01}, m_{10})$, where
+$m_{pq}=\sum x^p y^q I(x,y)$ are patch moments); and rotated BRIEF, a 256-bit binary
+descriptor from pairwise intensity comparisons at the patch orientation. Matching uses
+Hamming distance between descriptors.
+
+No ground truth exists for "correct" edges/corners, so robustness is measured against
+the **clean image's own output** as a reference:
+- **Edge IoU**: rasterize both Canny edge maps to binary masks $A$ (clean) and $B$
+  (distorted/restored), dilate slightly to tolerate sub-pixel shifts, then
+  $\text{IoU}(A,B) = |A \cap B| / |A \cup B|$.
+- **Corner count ratio**: $\#\text{corners(other)} / \#\text{corners(clean)}$.
+- **ORB match ratio**: fraction of clean-image keypoints with a good Hamming-distance
+  descriptor match in the other image.
+
+**Line detection** (low-level, classical) — `cv2.Canny` → `cv2.HoughLinesP`. The
+(non-probabilistic) Hough transform represents a line in normal form
+$\rho = x\cos\theta + y\sin\theta$; every edge pixel casts a vote for every $(\rho,\theta)$
+line passing through it into an accumulator array, and peaks in the accumulator are
+detected lines. The probabilistic variant used here (`HoughLinesP`) samples edge points
+rather than voting exhaustively and additionally checks pixel connectivity, returning
+actual line segments (endpoints) rather than infinite lines. This replaced an
 originally-planned optical-flow/tracking task, dropped because it required consecutive
-video frames that weren't available (see [§9](#9-development-log)). Same
-vs.-clean-reference philosophy: line-count ratio + rasterized line-mask IoU.
+video frames that weren't available (see [§7](#7-development-log)). Same
+vs.-clean-reference philosophy as above: line-count ratio + rasterized line-mask IoU.
 
 **Object detection** (high-level, deep learning) — `ultralytics.YOLO("yolov8n.pt")`,
-COCO-pretrained, unmodified except in Stage 4. This is the one task with **real ground
-truth**, scored with IoU-matched precision/recall/F1 against BDD100K's actual bounding
-boxes rather than a self-referential proxy.
+COCO-pretrained, unmodified except in Stage 4. YOLOv8 is a single-stage, anchor-free
+detector: a CSPDarknet-style backbone extracts multi-scale features, a PAN-FPN neck
+fuses them across scales (top-down then bottom-up), and a decoupled head predicts
+class probabilities and box coordinates independently at each scale. Box regression
+uses Distribution Focal Loss — rather than regressing each box edge directly, the model
+predicts a discrete probability distribution over candidate offsets and takes its
+expectation, which empirically gives better-calibrated, more stable regression than
+direct coordinate regression. Training loss combines this with a CIoU loss for box
+overlap quality:
+
+$$\mathcal{L}_{CIoU} = 1 - \text{IoU} + \frac{\rho^2(b, b_{gt})}{c^2} + \alpha v$$
+
+where $\rho$ is the distance between predicted and ground-truth box centers, $c$ is the
+diagonal of the smallest enclosing box, and $v$ penalizes aspect-ratio mismatch.
+
+This is the one task with **real ground truth**, scored properly rather than with a
+self-referential proxy:
+
+$$\text{Precision} = \frac{TP}{TP+FP}, \quad \text{Recall} = \frac{TP}{TP+FN}, \quad
+F_1 = \frac{2 \cdot \text{Precision} \cdot \text{Recall}}{\text{Precision}+\text{Recall}}$$
+
+A prediction counts as a true positive (TP) if it matches a ground-truth box of the
+same class with $\text{IoU} \geq 0.5$ (greedy matching, highest-IoU-first, each GT box
+usable once); unmatched predictions are false positives (FP), unmatched GT boxes are
+false negatives (FN).
 
 BDD100K's 10 detection classes don't exactly match COCO's 80, so the overlapping ones
 are mapped and the rest dropped:
@@ -352,7 +272,7 @@ are mapped and the rest dropped:
 | traffic light | traffic light |
 | traffic sign | *(dropped — no COCO equivalent)* |
 
-### 6.3 Distortions
+### 4.3 Distortions
 
 All three are directly relevant to driving/dashcam footage. Each has 5 fixed severity
 levels (parameter values chosen for a good spread in signal quality, not per-image
@@ -365,29 +285,77 @@ calibrated):
 | Motion blur | custom linear kernel + `cv2.filter2D` | kernel length = 5, 9, 15, 21, 31 px | ~33 → ~25 dB |
 
 Motion blur uses a **known, controlled linear kernel** (not a black-box random blur),
-so restoration can be genuine non-blind deconvolution rather than blind guesswork.
+so restoration can be genuine non-blind deconvolution rather than blind guesswork. The
+spatial-domain blur model is $g = h * f$, a convolution of the clean image $f$ with a
+normalized linear kernel $h$ of the given length (all weight along one line, oriented
+horizontally here — see [§4.5](#45-restoration-method-comparison-motion-blur)).
 
-Image quality is measured as PSNR (dB) between clean and distorted images — the same
-`10·log10(P_signal/P_noise)` "SNR" formula referenced in the course material,
-generalized here from the pure-additive-noise case to any pixel-domain distortion.
+Image quality is measured as PSNR (dB) between clean and distorted images:
+
+$$\text{MSE} = \frac{1}{N}\sum (I_{clean} - I_{distorted})^2, \qquad
+\text{PSNR} = 10\log_{10}\!\left(\frac{255^2}{\text{MSE}}\right)$$
+
+the same $10\log_{10}(P_{signal}/P_{noise})$ "SNR" formula referenced in the course
+material, generalized here from the pure-additive-noise case (where it was originally
+defined) to any pixel-domain distortion — compression and blur aren't additive noise,
+but the same ratio-of-powers logic still quantifies how far a distorted image is from
+the clean reference.
 
 **Visual example** (most severe level of each distortion, plus restoration):
 
 ![Before/after grid](results/figures/before_after_grid.png)
+*Rows top to bottom: compression, low-light, motion blur, each shown at its most
+severe level (columns: clean, distorted, restored). Compression restoration is
+subtle by design (deblocking only). Low-light restoration visibly recovers visible
+structure — but see [§5.4](#54-verifying-the-counter-intuitive-results) for why that
+doesn't necessarily help the detector. Motion-blur restoration removes the visible
+blur trails.*
 
-### 6.4 Restoration methods
+### 4.4 Restoration methods
 
 | Distortion | Method | Why |
 |---|---|---|
 | Compression | Bilateral filter on the Y (luma) channel only | Smooths blocking artifacts while preserving color and most edges |
 | Low-light | Gamma correction (γ=0.35) + CLAHE on the L channel | Lifts shadow detail, then boosts local contrast without blowing out highlights |
-| Motion blur | Wiener deconvolution, known kernel, regularization tuned per severity level | Best detection F1 of three methods explicitly compared — see §6.5 |
+| Motion blur | Wiener deconvolution, known kernel, regularization tuned per severity level | Best detection F1 of three methods explicitly compared — see §4.5 |
+
+**Bilateral filter** (compression deblocking) replaces each pixel with a weighted
+average of its neighborhood, weighting by both spatial proximity and intensity
+similarity, which lets it smooth flat regions (where JPEG blocking artifacts appear)
+while leaving genuine edges alone:
+
+$$I'(x) = \frac{1}{W_x}\sum_{x_i \in \Omega} I(x_i)\, G_{\sigma_s}(\lVert x-x_i\rVert)\, G_{\sigma_r}(|I(x)-I(x_i)|)$$
+
+where $G_{\sigma_s}$ is a spatial Gaussian (nearby pixels weighted more), $G_{\sigma_r}$
+is a range/intensity Gaussian (similar-intensity pixels weighted more, so it doesn't
+blur across a real edge), and $W_x$ normalizes the weights to sum to 1.
+
+**Gamma correction** (low-light) applies a power-law remap to lift dark pixels:
+$I' = 255 \cdot (I/255)^\gamma$ with $\gamma=0.35 < 1$, which expands the dark end of
+the range disproportionately (e.g. a pixel at 10% brightness moves to roughly 30%,
+while a pixel at 90% only moves to about 96%).
+
+**CLAHE** (Contrast-Limited Adaptive Histogram Equalization, applied after gamma, on
+the L channel) equalizes the local histogram independently within small tiles (8×8
+here) rather than globally, so it boosts contrast differently in dark vs. bright
+regions of the same image, with bilinear interpolation between tile boundaries to avoid
+blocking artifacts. The *clip limit* caps how much any single intensity bin can be
+amplified — before computing each tile's histogram-equalization mapping, bin counts
+above the clip limit are redistributed across the histogram — which exists specifically
+to prevent noise over-amplification in flat/noisy regions. As
+[§5.3, finding 3](#53-key-findings) shows, that safeguard doesn't fully prevent it on
+the most severely underexposed images in this dataset.
 
 **Task overlay example** (edges/corners and lines, clean vs. severely motion-blurred):
 
 ![Task overlays](results/figures/task_overlays.png)
+*Top row: Canny edges (white) and Shi-Tomasi corners (green dots), clean vs. severely
+motion-blurred — blur both erases real edges/corners and, in flatter regions,
+occasionally invents new spurious ones. Bottom row: Hough-detected lines (magenta) on
+the same pair — line count and length both drop sharply once the underlying edges are
+gone.*
 
-### 6.5 Restoration method comparison (motion blur)
+### 4.5 Restoration method comparison (motion blur)
 
 Motion-blur restoration is the one place in this project where the "obvious" choice
 changed more than once. Rather than only report the final answer, all three attempts
@@ -395,16 +363,34 @@ are kept side by side in `restoration.py` (`MOTION_BLUR_METHODS`) and compared
 explicitly across all 150 images and all 5 severity levels
 (`results/tables/motion_blur_method_comparison.csv`).
 
-**Why Wiener deconvolution gets worse as the blur kernel gets longer.** Wiener
-deconvolution divides in the frequency domain by the blur kernel's frequency response
-(regularized by a `balance` parameter to avoid dividing by ~0). A linear motion-blur
-kernel of length *L* has a sinc-shaped frequency response with *zeros* spaced roughly
-*1/L* apart — the longer the kernel, the more zeros, more densely packed. Near each
-zero, the unregularized inverse blows up, amplifying whatever noise/quantization exists
-at that frequency; for a horizontal kernel this amplification shows up as periodic
-*vertical* stripes in the spatial domain. A single `balance` value is one global
-trade-off between "suppress noise near the zeros" and "actually deblur" — for a long
-kernel with many closely-spaced zeros, no single value works well everywhere.
+**Wiener deconvolution.** Modeling the blur as $g = h*f+n$ (clean image $f$, known blur
+kernel $h$, noise $n$), the Wiener filter estimates $f$ in the frequency domain as
+
+$$\hat{F}(u,v) = \left[\frac{H^*(u,v)}{|H(u,v)|^2 + K}\right] G(u,v)$$
+
+where $H$, $G$ are the Fourier transforms of the kernel and blurred image, and $K$ (the
+`balance` parameter here) is a regularization constant standing in for the
+noise-to-signal power ratio.
+
+**Why it gets worse as the blur kernel gets longer.** A linear motion-blur kernel of
+length $L$ has a sinc-shaped frequency response $H$ with *zeros* spaced roughly $1/L$
+apart in frequency — the longer the kernel, the more zeros, more densely packed. Near
+each zero ($H \to 0$), $\hat{F}$ blows up unless $K$ is large enough to dominate the
+denominator there; for a horizontal kernel this noise blow-up shows up as periodic
+*vertical* stripes in the spatial domain (verified quantitatively below). A single $K$
+is one global trade-off between suppressing that blow-up and actually deblurring — for
+a long kernel with many closely-spaced zeros, no single value works well everywhere.
+
+**Richardson-Lucy deconvolution**, the alternative compared here, instead solves the
+same $g=h*f$ model iteratively under a Poisson-noise maximum-likelihood formulation:
+
+$$f_{k+1}(x) = f_k(x) \cdot \left[\left(\frac{d}{h * f_k}\right) \star h\right](x)$$
+
+where $d$ is the observed (blurred) image and $\star$ denotes correlation with the
+flipped kernel. This has no frequency-domain division, so it doesn't hit the same hard
+singularity — but it converges toward an unconstrained maximum-likelihood estimate that
+increasingly fits noise the longer it runs, so the iteration count $k$ (fixed at 3
+here) is itself the regularization knob (early stopping), in place of Wiener's $K$.
 
 **The three methods compared:**
 
@@ -450,15 +436,31 @@ despite better stripe/PSNR numbers — still ends up with *worse* detection F1 t
 **Visual comparison** (clean / distorted / all three restorations, at increasing severity):
 
 ![Motion blur method comparison grid](results/figures/motion_blur_method_grid.png)
+*Rows are severity levels 1, 3, and 4 (mild to severe); columns are clean, distorted,
+and all three restoration attempts. Watch the "Wiener (fixed)" column at the two most
+severe rows — the vertical striping is the ringing artifact explained above, visible
+directly rather than just as a number.*
 
 **Metric trends across severity, all methods overlaid:**
 
 ![PSNR by method](results/figures/mb_compare_psnr.png)
+*Restoration quality (PSNR) by method across severity. `wiener_tuned` (its own color
+in the legend) has the best PSNR at every level; `wiener_fixed` collapses sharply at
+the most severe level — the point where the striping above becomes visible.*
+
 ![Stripe score by method](results/figures/mb_compare_stripe.png)
+*Artifact/ringing severity by method (log scale, lower = cleaner). `wiener_fixed`
+spikes an order of magnitude higher than the other two methods at severe levels —
+this is the quantitative signature of the visible striping.*
+
 ![Detection F1 by method](results/figures/mb_compare_det_f1.png)
+*The metric that matters most: detection F1 against real ground truth, by method.
+`wiener_tuned` is the only method that consistently beats "no restoration at all"
+(the grey distorted-baseline line) — the other two both fall below it at higher
+severity, despite one of them (Richardson-Lucy) having better PSNR/stripe numbers.*
 
 **Takeaway.** `wiener_tuned` is used as the production restoration method for this
-project's headline results ([§7](#7-results)) because it has the best detection F1 —
+project's headline results ([§5](#5-results)) because it has the best detection F1 —
 the metric with real ground truth, and therefore the one trusted most here. But it
 required the most manual tuning (a per-severity-level lookup table), and the
 convenience of "just tune the regularization" only goes so far, as `wiener_fixed`'s
@@ -468,22 +470,22 @@ reasonable choice if this were purely an image-quality task — it just isn't th
 choice for *this* task. Which restoration method is "best" depends entirely on what is
 being optimized for.
 
-### 6.6 Fine-tuning
+### 4.6 Fine-tuning
 
 Stage 4 fine-tunes `yolov8n.pt` on a small set of distorted images and re-evaluates on
 a held-out distorted set never seen during training — object detection is the only
 task fine-tuned, since edge/corner and line detection are classical algorithms with no
-trainable weights. Two attempts were made (see [§9](#9-development-log) for the full
+trainable weights. Two attempts were made (see [§7](#7-development-log) for the full
 story); the second (`finetune_run_v2.py`) is the production version, using a frozen
 backbone (`freeze=10`) and disabled mosaic augmentation, both standard small-data
 fine-tuning practices. Training runs entirely on CPU (`device="cpu"`), 8 epochs, and
-completes in well under 5 minutes. Results are in [§7.4](#74-fine-tuning-results).
+completes in well under 5 minutes. Results are in [§5.5](#55-fine-tuning-results).
 
 ---
 
-## 7. Results
+## 5. Results
 
-### 7.1 Summary table
+### 5.1 Summary table
 
 Averaged across all 150 images and all 5 severity levels:
 
@@ -499,15 +501,28 @@ Averaged across all 150 images and all 5 severity levels:
 
 Full per-image, per-level data: `results/tables/full_results.csv` (4,650 rows).
 
-### 7.2 Robustness curves
+### 5.2 Robustness curves
 
 Metric vs. SNR, distorted vs. restored:
 
 ![Edge IoU vs SNR](results/figures/edge_iou_vs_snr.png)
-![Line IoU vs SNR](results/figures/line_iou_vs_snr.png)
-![Detection F1 vs SNR](results/figures/det_f1_vs_snr.png)
+*Edge/corner robustness (vs. the clean image's own output) for each distortion,
+distorted (solid) vs. restored (dashed). Compression and motion-blur restoration both
+pull the curve back toward the clean baseline; low-light restoration is roughly
+neutral on this purely structural metric even though it changes the image a lot.*
 
-### 7.3 Key findings
+![Line IoU vs SNR](results/figures/line_iou_vs_snr.png)
+*Same comparison for Hough line detection. The pattern closely tracks edge IoU above,
+which makes sense — line detection here is built directly on top of Canny edges, so
+whatever helps or hurts edges propagates through to lines.*
+
+![Detection F1 vs SNR](results/figures/det_f1_vs_snr.png)
+*The high-level task: object detection F1 against real BDD100K ground truth — the
+only chart on this page backed by an annotated answer key rather than a
+clean-image-as-reference proxy. This is the chart the findings below are mainly
+about.*
+
+### 5.3 Key findings
 
 1. **Clear degradation with severity.** All three tasks degrade monotonically as SNR
    drops — e.g. compression detection F1 falls from 0.449 (mild, 39 dB) to 0.151
@@ -519,25 +534,91 @@ Metric vs. SNR, distorted vs. restored:
 
 3. **Pixel-quality metrics and downstream task performance don't always agree.**
    Low-light restoration *improves* SNR (9.4→12.2 dB) but *slightly hurts* detection F1
-   (0.166→0.154). CLAHE+gamma brightens the image for human viewing but can amplify
-   noise/color artifacts in ways that confuse the detector — a genuine, non-obvious
-   result, not a bug.
+   (0.166→0.154). This was specifically re-verified rather than taken at face value —
+   see [§5.4](#54-verifying-the-counter-intuitive-results).
 
 4. **The "cleanest-looking" restoration isn't always the best one.** Full breakdown in
-   [§6.5](#65-restoration-method-comparison-motion-blur): Richardson-Lucy looks
+   [§4.5](#45-restoration-method-comparison-motion-blur): Richardson-Lucy looks
    cleanest and has the best PSNR/stripe scores in several conditions, but has the
    **worst detection F1 of the three methods compared** (0.291, below even doing
-   nothing at 0.323). No single quality metric reliably predicted which restoration
-   method would actually help the downstream task.
+   nothing at 0.323). This was also independently re-verified — see
+   [§5.4](#54-verifying-the-counter-intuitive-results).
 
 5. **Baseline domain gap.** Even on *clean* images, stock COCO-pretrained YOLOv8n only
    reaches F1=0.45 against BDD100K's real GT — expected, since BDD100K's camera
    angle/height and object scale differ from COCO's training distribution. This
-   motivates fine-tuning ([§7.4](#74-fine-tuning-results)).
+   motivates fine-tuning ([§5.5](#55-fine-tuning-results)).
 
-### 7.4 Fine-tuning results
+### 5.4 Verifying the counter-intuitive results
+
+Findings 3 and 4 both say a restoration step made a downstream result *worse* than
+leaving the image alone, which is worth being skeptical of by default — that shouldn't
+happen from a genuine bug, and it's exactly the kind of surprising result that turned
+out, once before in this project, to actually be one (see
+[§7](#7-development-log)). So rather than report it and move on, it was checked.
+
+**Ruled out: data corruption.** Restored images could in principle end up a different
+shape or dtype than the original (which would silently misalign ground-truth box
+coordinates and produce spurious detection failures). Verified directly: every
+distortion/restoration combination preserves the exact `(H, W, 3)` `uint8` shape and
+dtype of the input — confirmed programmatically across all three distortions at both
+mild and severe levels before trusting any downstream number.
+
+**What's actually happening: both cases are noise/artifact amplification, confirmed
+quantitatively, not asserted.** The check used is the Laplacian variance of the
+grayscale image, $\operatorname{Var}(\nabla^2 I)$ — a standard focus/noise proxy: real
+image detail and injected noise both increase it, but injected noise increases it
+*without* corresponding real structure.
+
+- **Low-light (CLAHE).** One concrete example: an image with 2 correct traffic-light
+  detections on the distorted (dark) frame (F1=0.667) drops to **zero** detections
+  after restoration (F1=0.000) — despite mean brightness genuinely improving (11.3 →
+  38.0, still short of the clean image's 104.9). The Laplacian variance in a flat
+  region of that same image: clean = 456, distorted = 211, **restored = 1451** — over
+  3× more high-frequency energy than the *clean* image itself has, injected by CLAHE's
+  per-tile local contrast boost amplifying sensor noise in a near-black, low-SNR region
+  (exactly the failure mode the clip limit in [§4.4](#44-restoration-methods) exists to
+  prevent, and doesn't fully). Checked at scale, not just this one image: across 40
+  images at severity level 3, mean Laplacian variance is 388 (clean) / 33 (distorted) /
+  **540 (restored)** — restored exceeds the clean image's own natural texture level in
+  **35 of 40 images (87.5%)**.
+
+- **Motion blur (Richardson-Lucy).** One concrete example at the most severe level: the
+  distorted frame yields 7 detections (F1=0.571); the production method
+  (`wiener_tuned`) yields 5 *higher-confidence* detections (F1=0.667); Richardson-Lucy
+  yields **1** low-confidence detection (F1=0.000). Laplacian variance: distorted = 48,
+  `wiener_tuned` = 13 (heavy smoothing — this is *why* it works, removing ambiguous
+  content), richardson_lucy = **57** — higher than the distorted image's own blur
+  level. Checked at scale: across 40 images at the most severe level,
+  **Richardson-Lucy's output exceeds the distorted image's Laplacian variance in 39 of
+  39 images with any ground truth (100%)**.
+
+**An honest caveat.** The *magnitude* of excess noise only weakly correlates with the
+*size* of the F1 drop at the individual-image level (Pearson r ≈ −0.13 to −0.14 in both
+cases, tested directly rather than assumed). The mechanism — restoration algorithms
+optimizing for pixel fidelity or human perception can inject high-frequency content
+that a detector never saw in training, and that detector's response to it is a
+nonlinear function of the network, not simply proportional to how much noise was added
+— is real, consistently present in aggregate, and directly measured here. But it is not
+being overstated as a clean per-image predictive rule.
+
+**Why this isn't specific to a bad implementation.** This is a documented, general
+tension in the image restoration literature: methods evaluated by pixel fidelity
+(PSNR/SSIM) or human perceptual quality are not the same thing as methods that help a
+frozen, pretrained downstream model, because that model's sensitivity to
+out-of-distribution artifacts doesn't have to track either metric. This project's
+results are a small, directly-measured instance of that general gap, not an isolated
+implementation error — which is also why the "obviously best" restoration method
+changed twice during development (§7) before landing on the one that actually helps the
+metric that matters here (real detection ground truth) rather than the one that looks
+cleanest.
+
+### 5.5 Fine-tuning results
 
 ![Fine-tune comparison](results/figures/finetune_comparison.png)
+*Detection F1, baseline (pretrained) vs. fine-tuned, broken down by distortion type.
+The bars sit close together in every group — a visual confirmation of the "no clear
+win" finding below, rather than a dramatic before/after.*
 
 | | Precision | Recall | F1 |
 |---|---|---|---|
@@ -558,14 +639,14 @@ learning rate.
 
 ---
 
-## 8. Limitations
+## 6. Limitations
 
 - **Small scale by design.** 150 images total (100 held-out for baseline evaluation +
   50 for fine-tuning) is small by deep learning standards. This is a deliberate,
   explicitly-permitted choice for this course project — the pipeline itself scales to
   any number of images by construction.
 - **Class imbalance.** This 150-image sample has zero bicycle/motorcycle/train
-  instances and is dominated by cars and traffic lights (see [§5](#5-dataset)), so
+  instances and is dominated by cars and traffic lights (see [§3](#3-dataset)), so
   per-class metrics for rare classes aren't meaningful here.
 - **Proxy metrics for 2 of 3 tasks.** Edge/corner and line detection have no ground
   truth, so robustness is measured against each image's own clean-image output rather
@@ -573,17 +654,17 @@ learning rate.
 - **BDD100K → COCO class mapping is approximate.** "Rider" folds into "person";
   "traffic sign" has no COCO equivalent and is dropped entirely from GT matching.
 - **Fine-tuning is a proof of concept**, not a production training run (see
-  [§7.4](#74-fine-tuning-results), [§9](#9-development-log)).
+  [§5.5](#55-fine-tuning-results), [§7](#7-development-log)).
 
 ---
 
-## 9. Development Log
+## 7. Development Log
 
 This section documents the actual friction points hit while building and later
 hardening this project, and how each was resolved — kept in the spirit of documenting
 the real process rather than only the polished final result. Technical detail that's
 already covered elsewhere (e.g. the full restoration-method analysis in
-[§6.5](#65-restoration-method-comparison-motion-blur)) is not repeated here; this
+[§4.5](#45-restoration-method-comparison-motion-blur)) is not repeated here; this
 section focuses on the chronology and the mistakes.
 
 **1. Dataset access.** Cityscapes and KITTI both require a login to download, which
@@ -630,7 +711,7 @@ run on a clean machine. Both copies now use the corrected all-parameters check.
 real result was that fine-tuning *hurt* performance. Attempt 2 applied two standard
 small-data fine-tuning practices — freezing the backbone and disabling mosaic/geometric
 augmentation — plus broader distortion-type coverage in the training set. This narrowed
-the gap but didn't produce a clear win (see [§7.4](#74-fine-tuning-results)). Reported
+the gap but didn't produce a clear win (see [§5.5](#55-fine-tuning-results)). Reported
 honestly rather than cherry-picked.
 
 **8. Long-running batch jobs vs. tool call limits.** Processing 150 images through the
@@ -651,7 +732,7 @@ and looked like a clean win on a single test image; a full 150-image comparison
 final one) then showed Richardson-Lucy actually has the *worst* aggregate detection F1
 of the three methods, and the tuned-Wiener approach — briefly abandoned along the way —
 is the real winner. Full technical explanation, data, and figures are in
-[§6.5](#65-restoration-method-comparison-motion-blur); the takeaway that generalizes is
+[§4.5](#45-restoration-method-comparison-motion-blur); the takeaway that generalizes is
 that a single qualitative check, even a careful one, can point in the wrong direction,
 and "looks cleaner" is a different thing from "helps the task," sometimes in direct
 conflict.
@@ -668,7 +749,196 @@ correctly end-to-end with zero code changes.
 
 ---
 
-## 10. Credits and License
+## 8. Reproducing This Project
+
+Everything above this point is the actual report: what was done, why, the math behind
+it, and what was found. This section is the practical complement — how to get the code
+running on your own machine if you want to reproduce or extend it. It's deliberately
+placed at the end: the code is the *means* by which the results in
+[§5](#5-results) were produced, not the point of the project.
+
+### 8.1 Repository Structure
+
+```
+├── README.md                      <- this file
+├── requirements.txt
+├── LICENSE
+├── src/                            <- all pipeline code
+│   ├── config.py                    <- all paths, resolved relative to the repo (see §7)
+│   ├── distortions.py               <- 3 distortions x 5 severity levels
+│   ├── restoration.py               <- classical restoration per distortion (3 motion-blur variants kept side by side)
+│   ├── metrics.py                   <- PSNR/SNR, detection P/R/F1, edge/line IoU, stripe/artifact score
+│   ├── task_edge_corner.py          <- Task 1 (low-level, classical)
+│   ├── task_lines.py                <- Task 2 (low-level, classical)
+│   ├── task_detection.py            <- Task 3 (high-level, DL) + BDD100K GT loader
+│   ├── pipeline.py                  <- orchestrates all 3 tasks x all distortions x all stages
+│   ├── run_full.py                  <- resumable batch runner (used to process all 150 images)
+│   ├── recompute_motion_blur_restore.py <- targeted recompute after restoration.py changes
+│   ├── compare_motion_blur_methods.py   <- §4.5 ablation study across all 3 restoration methods
+│   ├── finetune_utils.py            <- BDD100K GT -> YOLO label format conversion
+│   ├── finetune_run.py              <- Stage 4, attempt 1 (see §7)
+│   ├── finetune_run_v2.py           <- Stage 4, attempt 2 (frozen backbone, no mosaic) — production
+│   ├── finetune_eval_fixed.py       <- corrected baseline-vs-finetuned evaluation
+│   ├── make_figures.py              <- generates the main report figures
+│   ├── make_slide_figures.py        <- slide-optimized versions of the key charts
+│   └── make_comparison_figures.py   <- §4.5 ablation study figures
+├── data/
+│   └── raw/bdd_subset/
+│       ├── images/                  <- 150 BDD100K images
+│       └── labels_subset.json       <- matching detection GT (filtered from the ~1GB full file)
+├── models/
+│   ├── yolov8n.pt                   <- pretrained COCO weights (baseline)
+│   └── yolov8n_finetuned.pt         <- fine-tuned on distorted images (Stage 4)
+├── results/
+│   ├── tables/                      <- all raw + summary CSVs
+│   └── figures/                     <- all plots (referenced throughout this README)
+├── presentation/
+│   ├── build_deck.py                <- builds the final PPTX (pure Python, python-pptx)
+│   ├── vision_robustness_presentation.pptx
+│   └── assets/                      <- figures embedded in the deck
+└── docs/
+    └── (this README is the primary report)
+```
+
+---
+
+### 8.2 Environment and Setup
+
+This section covers everything needed to get the code running on a fresh machine.
+Read this before anything else if you're cloning this repository for the first time.
+
+#### Tested configuration
+
+| Component | Tested value(s) |
+|---|---|
+| OS | Developed on Linux (Ubuntu-based); confirmed working on Windows 10/11 |
+| Python | 3.12 (primary development/test target); confirmed also working on 3.14 |
+| Hardware | CPU-only — no GPU/CUDA required |
+| CPU used in testing | Intel Xeon (development), Intel Core i9-11900K (Windows verification) |
+
+This project has **no GPU dependency**; every result in this README was produced on
+CPU (~10–15 sec/image for the full pipeline, well under 5 minutes for fine-tuning). If
+your machine has a CUDA-capable GPU, `ultralytics` will use it automatically for
+inference without any code changes; fine-tuning explicitly forces `device="cpu"` for
+portability (see [§4.6](#46-fine-tuning)) and would need a one-line edit in
+`finetune_run_v2.py` to opt into GPU training.
+
+#### Software requirements
+
+- **Python 3.10–3.12 recommended** (this is the range `ultralytics`/`torch` officially
+  target at time of writing). Newer versions may work — 3.14 has been confirmed to run
+  this project successfully — but are outside the primary tested range, so if you hit
+  an obscure dependency error on a very new Python version, trying 3.12 is a reasonable
+  first troubleshooting step.
+- All Python package dependencies are pinned to minimum versions in `requirements.txt`:
+  `opencv-python-headless`, `numpy`, `albumentations`, `scikit-image`, `matplotlib`,
+  `pandas`, `torch`, `torchvision`, `ultralytics`, `python-pptx`.
+- No system-level dependencies beyond Python itself (no `ffmpeg`, no CUDA toolkit, no
+  compiler toolchain required — all packages above ship prebuilt wheels for
+  Windows/macOS/Linux).
+- **Internet access is required** for the initial `pip install` and for `ultralytics`
+  to auto-download the pretrained `yolov8n.pt` COCO weights (~6 MB) the first time any
+  script runs.
+
+#### Installation
+
+```bash
+git clone <your-repo-url>
+cd <repo-folder>
+
+python -m venv .venv
+
+# activate the virtual environment:
+#   Windows, Git Bash:        source .venv/Scripts/activate
+#   Windows, PowerShell/cmd:  .venv\Scripts\activate
+#   macOS / Linux:             source .venv/bin/activate
+
+pip install -r requirements.txt
+```
+
+Then, before running anything else, verify the environment resolves correctly:
+
+```bash
+cd src
+python config.py
+```
+
+This prints every key path the project uses (`PROJECT_ROOT`, `IMAGES_DIR`,
+`LABELS_PATH`, `BASELINE_WEIGHTS`, `TABLES_DIR`, `FIGURES_DIR`) along with whether each
+one actually exists on disk. All paths are resolved **relative to the repository's own
+location** (`src/config.py`, via `Path(__file__)`) — never hardcoded to any specific
+machine or username. If everything shows `exists: True`, you're ready to run anything
+in [§8.3](#83-usage). If something shows `exists: False`, the clone/extraction likely
+didn't bring over the `data/`, `models/`, or `results/` folders intact — check against
+the structure in [§8.1](#81-repository-structure).
+
+#### Known environment-specific issues
+
+A few real issues were hit and fixed while developing and verifying this project on
+different machines — kept here for quick reference (see [§7](#7-development-log) for
+the full story of each):
+
+- **Windows path strings in Python** (`SyntaxError: unicodeescape ... can't decode
+  bytes`): caused by an unescaped `\U` or similar in a plain Windows path string being
+  parsed as a Unicode escape. Use raw strings (`r"C:\Users\..."`) or forward slashes.
+- **PyCharm `CreateProcess error=2`**: the run configuration's Python interpreter
+  points at a venv from an unrelated project. Fix via
+  `Settings → Python | Interpreter → Add Local Interpreter → New environment`.
+- **Absolute paths hardcoded to a different machine**: fixed in the codebase itself
+  (`src/config.py`) — should not recur, but if you fork/modify scripts, avoid
+  reintroducing hardcoded absolute paths for exactly this reason.
+
+---
+
+### 8.3 Usage
+
+All commands below assume an activated virtual environment and `cd src` (i.e. run from
+inside the repository's `src/` folder), unless otherwise noted.
+
+#### Full pipeline (all 3 tasks x all distortions x clean/distorted/restored)
+
+```bash
+python run_full.py --batch_limit 150
+```
+
+Processes all 150 images through every stage and writes
+`results/tables/full_results.csv`. This is **resumable** — it checks the output CSV for
+already-processed images and skips them — so it's safe to run in smaller batches
+(e.g. `--batch_limit 20`, repeated) if you'd rather not commit to one long run.
+
+#### Fine-tuning (Stage 4)
+
+```bash
+python finetune_run_v2.py        # trains + copies weights to models/yolov8n_finetuned.pt
+python finetune_eval_fixed.py    # evaluates baseline vs. fine-tuned on the held-out set
+```
+
+#### Motion-blur restoration method comparison (§4.5)
+
+```bash
+python compare_motion_blur_methods.py --batch_limit 150   # resumable, same pattern as run_full.py
+python make_comparison_figures.py
+```
+
+#### Regenerate figures
+
+```bash
+python make_figures.py
+python make_slide_figures.py
+```
+
+#### Regenerate the presentation
+
+```bash
+cd ../presentation
+python build_deck.py
+```
+
+Pure Python (`python-pptx`) — no Node.js/npm needed.
+
+---
+
+## 9. Credits and License
 
 - **Dataset**: [BDD100K](https://doc.bdd100k.com/) — used under its own license terms
   (non-commercial, academic/research use). The `data/` folder in this repo is subject to
