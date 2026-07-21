@@ -42,12 +42,11 @@ are simulated or illustrative placeholders.
    - [5.4 Verifying the Counter-Intuitive Results](#54-verifying-the-counter-intuitive-results)
    - [5.5 Fine-Tuning Results](#55-fine-tuning-results)
 6. [Limitations](#6-limitations)
-7. [Development Log](#7-development-log)
-8. [Reproducing This Project](#8-reproducing-this-project)
-   - [8.1 Repository Structure](#81-repository-structure)
-   - [8.2 Environment and Setup](#82-environment-and-setup)
-   - [8.3 Usage](#83-usage)
-9. [Credits and License](#9-credits-and-license)
+7. [Reproducing This Project](#8-reproducing-this-project)
+   - [7.1 Repository Structure](#81-repository-structure)
+   - [7.2 Environment and Setup](#82-environment-and-setup)
+   - [7.3 Usage](#83-usage)
+
 
 ---
 
@@ -137,14 +136,9 @@ Two things worth flagging about this diagram up front, both explained in full la
 ## 3. Dataset
 
 This project uses a **150-image subset of BDD100K** (`train` split), with matching
-detection labels. BDD100K was chosen after two other candidates turned out to be
-impractical:
-
-- **Cityscapes**: requires a login-gated download with no way to script around it.
-- **KITTI**: the same login requirement applies to the packages needed here.
-- **BDD100K**: also login-gated for bulk download, but a subset downloaded locally is
-  trivial to filter and hand off — see [§7](#7-development-log) for exactly how this
-  was done, including filtering a ~1 GB label file down to what was actually needed.
+detection labels.
+- **BDD100K**: a subset downloaded locally is trivial to filter and hand off — see [§7](#7-development-log)
+- for exactly how this was done, including filtering a ~1 GB label file down to what was actually needed.
 
 **GT sanity check.** Before trusting the label file, its boxes were rendered onto a
 sample image to visually confirm the coordinates line up correctly:
@@ -166,6 +160,7 @@ onto COCO's 80 — see [§4.2](#42-tasks)):
 
 The imbalance (dominated by cars/traffic lights; zero bicycle/motorcycle/train
 instances) is a known limitation of a 150-image sample — see [§6](#6-limitations).
+i could have taked random samples and choose the best split - didn't come forward with this as it is not my main focus.
 
 ---
 
@@ -716,98 +711,8 @@ learning rate.
 
 ---
 
-## 7. Development Log
 
-This section documents the actual friction points hit while building and later
-hardening this project, and how each was resolved — kept in the spirit of documenting
-the real process rather than only the polished final result. Technical detail that's
-already covered elsewhere (e.g. the full restoration-method analysis in
-[§4.5](#45-restoration-method-comparison-motion-blur)) is not repeated here; this
-section focuses on the chronology and the mistakes.
-
-**1. Dataset access.** Cityscapes and KITTI both require a login to download, which
-blocked scripted/automated access. Resolved by switching to BDD100K, downloading it
-manually, and filtering locally before uploading a small subset.
-
-**2. Filtering a 1GB label file.** BDD100K's full label file
-(`bdd100k_labels_images_train.json`, ~1GB, ~70k entries) was too big to hand off
-directly. Fixed with a short local script that loads the full JSON once, filters to
-just the 150 chosen image filenames, and writes a small (<1MB) `labels_subset.json`
-matching the shape `task_detection.load_bdd_labels()` expects.
-
-**3. Windows path + Python raw strings.** Running a local filter script on Windows hit
-`SyntaxError: (unicode error) 'unicodeescape' codec can't decode bytes` — an unescaped
-`\U` in a Windows path being interpreted as a Unicode escape sequence. Fixed with raw
-strings (`r"C:\Users\..."`) or forward slashes.
-
-**4. PyCharm interpreter misconfiguration.** `CreateProcess error=2` when running via
-PyCharm — the run configuration pointed at a venv from an unrelated old project. Fixed
-via `Settings → Python | Interpreter → Add Local Interpreter → New environment`.
-
-**5. Fine-tuning evaluation bug (caching).** The first fine-tuning attempt
-(`finetune_run.py`) produced *byte-identical* baseline and fine-tuned results. Root
-cause: `task_detection.load_model()` caches YOLO model objects by weights path, and
-calling `.train()` on a cached model mutates its weights **in place**. Since both the
-training call and the later "baseline" evaluation went through the same cache,
-"baseline" was silently evaluating the already-fine-tuned model. Fixed by loading two
-fully independent `YOLO(...)` instances (bypassing the cache entirely) for any
-before/after comparison — see `finetune_eval_fixed.py`.
-
-**6. The same bug's second form (frozen-parameter false positive).** Verifying the fix
-above by comparing a single model parameter is unreliable: with a frozen backbone
-(`freeze=10`), the first parameter is *supposed* to be identical between baseline and
-fine-tuned, and separately, YOLOv8's DFL layer is structurally fixed regardless of
-training — so checking either one alone can report "no difference" even when training
-worked correctly. Fixed by comparing across *all* named parameters instead of one
-arbitrarily-chosen one. **This exact mistake was made twice**: once in the original
-evaluation script (fixed in `finetune_eval_fixed.py`), and a second copy of the same
-check was left unfixed in `finetune_run_v2.py` itself, which surfaced later as a live
-`AssertionError: models identical - bug` crash immediately after a successful training
-run on a clean machine. Both copies now use the corrected all-parameters check.
-
-**7. Fine-tuning attempt 1 → attempt 2.** After fixing the evaluation bug, attempt 1's
-real result was that fine-tuning *hurt* performance. Attempt 2 applied two standard
-small-data fine-tuning practices — freezing the backbone and disabling mosaic/geometric
-augmentation — plus broader distortion-type coverage in the training set. This narrowed
-the gap but didn't produce a clear win (see [§5.5](#55-fine-tuning-results)). Reported
-honestly rather than cherry-picked.
-
-**8. Long-running batch jobs vs. tool call limits.** Processing 150 images through the
-full pipeline takes 15–20+ minutes, and a background (`nohup ... &`) process didn't
-survive between separate tool invocations in the sandbox this project was originally
-built in. Fixed with a resumable batch design (`run_full.py` and siblings): each call
-processes a bounded number of new images and checkpoints progress to disk, so a full
-run can be split across several sequential calls without losing work.
-
-**9. A visibly broken restoration result, chased across three attempts.** The
-qualitative before/after figure for motion blur showed severe periodic vertical-stripe
-artifacts — not subtle, clearly wrong on visual inspection. This became the
-most-revisited part of the whole project: a naive fixed-regularization Wiener
-deconvolution was tuned per severity level, which fixed the visible artifacts but still
-underperformed doing nothing at the most severe level; Richardson-Lucy was then tried
-and looked like a clean win on a single test image; a full 150-image comparison
-(prompted specifically to keep and compare all attempts rather than report only the
-final one) then showed Richardson-Lucy actually has the *worst* aggregate detection F1
-of the three methods, and the tuned-Wiener approach — briefly abandoned along the way —
-is the real winner. Full technical explanation, data, and figures are in
-[§4.5](#45-restoration-method-comparison-motion-blur); the takeaway that generalizes is
-that a single qualitative check, even a careful one, can point in the wrong direction,
-and "looks cleaner" is a different thing from "helps the task," sometimes in direct
-conflict.
-
-**10. Hardcoded paths — the codebase didn't actually run anywhere else.** Nine files
-that read or wrote data had absolute paths like `/home/claude/project/data/...`
-hardcoded in, specific to the sandbox this project was originally built in. That path
-doesn't exist on any other computer, so none of these scripts could run after a fresh
-clone — a functional bug, not a style issue. Fixed by adding `src/config.py`, which
-derives every path from its own location on disk, and updating every script to import
-paths from there instead of hardcoding them. Verified by copying the entire project to
-an arbitrary, differently-named directory and confirming the full pipeline still ran
-correctly end-to-end with zero code changes.
-
----
-
-## 8. Reproducing This Project
+## 7. Reproducing This Project
 
 Everything above this point is the actual report: what was done, why, the math behind
 it, and what was found. This section is the practical complement — how to get the code
@@ -815,12 +720,11 @@ running on your own machine if you want to reproduce or extend it. It's delibera
 placed at the end: the code is the *means* by which the results in
 [§5](#5-results) were produced, not the point of the project.
 
-### 8.1 Repository Structure
+### 7.1 Repository Structure
 
 ```
 ├── README.md                      <- this file
 ├── requirements.txt
-├── LICENSE
 ├── src/                            <- all pipeline code
 │   ├── config.py                    <- all paths, resolved relative to the repo (see §7)
 │   ├── distortions.py               <- 3 distortions x 5 severity levels
@@ -852,58 +756,23 @@ placed at the end: the code is the *means* by which the results in
 │   ├── tables/                      <- all raw + summary CSVs
 │   └── figures/                     <- all plots (referenced throughout this README)
 ├── presentation/
-│   ├── build_deck.py                <- builds the final PPTX (pure Python, python-pptx)
-│   ├── vision_robustness_presentation.pptx
-│   └── assets/                      <- figures embedded in the deck
-└── docs/
-    └── (this README is the primary report)
+│   └── vision_robustness_presentation.pptx
+
 ```
 
 ---
 
-### 8.2 Environment and Setup
+### 7.2 Environment and Setup
 
 This section covers everything needed to get the code running on a fresh machine.
 Read this before anything else if you're cloning this repository for the first time.
 
-#### Tested configuration
-
-| Component | Tested value(s) |
-|---|---|
-| OS | Developed on Linux (Ubuntu-based); confirmed working on Windows 10/11 |
-| Python | 3.12 (primary development/test target); confirmed also working on 3.14 |
-| Hardware | CPU-only — no GPU/CUDA required |
-| CPU used in testing | Intel Xeon (development), Intel Core i9-11900K (Windows verification) |
-
-This project has **no GPU dependency**; every result in this README was produced on
-CPU (~10–15 sec/image for the full pipeline, well under 5 minutes for fine-tuning). If
-your machine has a CUDA-capable GPU, `ultralytics` will use it automatically for
-inference without any code changes; fine-tuning explicitly forces `device="cpu"` for
-portability (see [§4.6](#46-fine-tuning)) and would need a one-line edit in
-`finetune_run_v2.py` to opt into GPU training.
-
-#### Software requirements
-
-- **Python 3.10–3.12 recommended** (this is the range `ultralytics`/`torch` officially
-  target at time of writing). Newer versions may work — 3.14 has been confirmed to run
-  this project successfully — but are outside the primary tested range, so if you hit
-  an obscure dependency error on a very new Python version, trying 3.12 is a reasonable
-  first troubleshooting step.
-- All Python package dependencies are pinned to minimum versions in `requirements.txt`:
-  `opencv-python-headless`, `numpy`, `albumentations`, `scikit-image`, `matplotlib`,
-  `pandas`, `torch`, `torchvision`, `ultralytics`, `python-pptx`.
-- No system-level dependencies beyond Python itself (no `ffmpeg`, no CUDA toolkit, no
-  compiler toolchain required — all packages above ship prebuilt wheels for
-  Windows/macOS/Linux).
-- **Internet access is required** for the initial `pip install` and for `ultralytics`
-  to auto-download the pretrained `yolov8n.pt` COCO weights (~6 MB) the first time any
-  script runs.
 
 #### Installation
 
 ```bash
-git clone <your-repo-url>
-cd <repo-folder>
+git clone https://github.com/EladHavakuk/Image_Processing_Final_Project.git
+cd digital_image_processing_course_project
 
 python -m venv .venv
 
@@ -922,34 +791,8 @@ cd src
 python config.py
 ```
 
-This prints every key path the project uses (`PROJECT_ROOT`, `IMAGES_DIR`,
-`LABELS_PATH`, `BASELINE_WEIGHTS`, `TABLES_DIR`, `FIGURES_DIR`) along with whether each
-one actually exists on disk. All paths are resolved **relative to the repository's own
-location** (`src/config.py`, via `Path(__file__)`) — never hardcoded to any specific
-machine or username. If everything shows `exists: True`, you're ready to run anything
-in [§8.3](#83-usage). If something shows `exists: False`, the clone/extraction likely
-didn't bring over the `data/`, `models/`, or `results/` folders intact — check against
-the structure in [§8.1](#81-repository-structure).
 
-#### Known environment-specific issues
-
-A few real issues were hit and fixed while developing and verifying this project on
-different machines — kept here for quick reference (see [§7](#7-development-log) for
-the full story of each):
-
-- **Windows path strings in Python** (`SyntaxError: unicodeescape ... can't decode
-  bytes`): caused by an unescaped `\U` or similar in a plain Windows path string being
-  parsed as a Unicode escape. Use raw strings (`r"C:\Users\..."`) or forward slashes.
-- **PyCharm `CreateProcess error=2`**: the run configuration's Python interpreter
-  points at a venv from an unrelated project. Fix via
-  `Settings → Python | Interpreter → Add Local Interpreter → New environment`.
-- **Absolute paths hardcoded to a different machine**: fixed in the codebase itself
-  (`src/config.py`) — should not recur, but if you fork/modify scripts, avoid
-  reintroducing hardcoded absolute paths for exactly this reason.
-
----
-
-### 8.3 Usage
+### 7.3 Usage
 
 All commands below assume an activated virtual environment and `cd src` (i.e. run from
 inside the repository's `src/` folder), unless otherwise noted.
@@ -986,24 +829,3 @@ python make_figures.py
 python make_slide_figures.py
 python make_gallery_figures.py
 ```
-
-#### Regenerate the presentation
-
-```bash
-cd ../presentation
-python build_deck.py
-```
-
-Pure Python (`python-pptx`) — no Node.js/npm needed.
-
----
-
-## 9. Credits and License
-
-- **Dataset**: [BDD100K](https://doc.bdd100k.com/) — used under its own license terms
-  (non-commercial, academic/research use). The `data/` folder in this repo is subject to
-  that license, separate from the code license below.
-- **YOLOv8n weights**: [Ultralytics](https://github.com/ultralytics/ultralytics),
-  COCO-pretrained.
-- **Code in this repository**: MIT License (see `LICENSE`) — applies to `src/` only, not
-  to the BDD100K data in `data/`.
