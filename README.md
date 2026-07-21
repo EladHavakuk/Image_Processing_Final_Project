@@ -71,39 +71,9 @@ help?** Rather than assume the answers, everything here is measured directly.
 This section covers everything needed to get the code running on a fresh machine.
 Read this before anything else if you're cloning this repository for the first time.
 
-### 2.1 Tested configuration
 
-| Component | Tested value(s) |
-|---|---|
-| OS | Developed on Linux (Ubuntu-based); confirmed working on Windows 10/11 |
-| Python | 3.12 (primary development/test target); confirmed also working on 3.14 |
-| Hardware | CPU-only — no GPU/CUDA required (see [§2.4](#24-hardware-notes)) |
-| CPU used in testing | Intel Xeon (development), Intel Core i9-11900K (Windows verification) |
 
-This project has **no GPU dependency**. Every result in this README was produced on
-CPU. If your machine happens to have a CUDA-capable GPU, `ultralytics` will use it
-automatically for inference without any code changes; fine-tuning explicitly forces
-`device="cpu"` for portability (see [§6.6](#66-fine-tuning)) and would need a one-line
-edit in `finetune_run_v2.py` to opt into GPU training.
-
-### 2.2 Software requirements
-
-- **Python 3.10–3.12 recommended** (this is the range `ultralytics`/`torch` officially
-  target at time of writing). Newer versions may work — 3.14 has been confirmed to run
-  this project successfully — but are outside the primary tested range, so if you hit
-  an obscure dependency error on a very new Python version, trying 3.12 is a reasonable
-  first troubleshooting step.
-- All Python package dependencies are pinned to minimum versions in `requirements.txt`:
-  `opencv-python-headless`, `numpy`, `albumentations`, `scikit-image`, `matplotlib`,
-  `pandas`, `torch`, `torchvision`, `ultralytics`, `python-pptx`.
-- No system-level dependencies beyond Python itself (no `ffmpeg`, no CUDA toolkit, no
-  compiler toolchain required — all packages above ship prebuilt wheels for
-  Windows/macOS/Linux).
-- **Internet access is required** for the initial `pip install` and for `ultralytics`
-  to auto-download the pretrained `yolov8n.pt` COCO weights (~6 MB) the first time any
-  script runs.
-
-### 2.3 Installation
+### 2.1 Installation
 
 ```bash
 git clone <your-repo-url>
@@ -135,33 +105,6 @@ in [§3](#3-usage). If something shows `exists: False`, the clone/extraction lik
 didn't bring over the `data/`, `models/`, or `results/` folders intact — check against
 the structure in [§4](#4-repository-structure).
 
-### 2.4 Hardware notes
-
-- **CPU is sufficient for everything in this repo.** The full 150-image pipeline run
-  takes roughly 10–15 seconds/image on a typical modern CPU (~25–35 minutes total);
-  fine-tuning (8 epochs on ~40–90 small images) takes well under 5 minutes.
-- **RAM**: no unusual requirements — a machine that can run a modern web browser
-  comfortably (8 GB+) is sufficient. Nothing here loads the full BDD100K dataset or a
-  large model into memory at once.
-- **Disk space**: the repository itself is roughly 35–40 MB (mostly the 150 sample
-  images and two small YOLO checkpoints). A fresh virtual environment with all
-  dependencies installed (largely `torch`) typically needs on the order of 2–3 GB.
-
-### 2.5 Known environment-specific issues
-
-A few real issues were hit and fixed while developing and verifying this project on
-different machines — kept here for quick reference (see [§9](#9-development-log) for
-the full story of each):
-
-- **Windows path strings in Python** (`SyntaxError: unicodeescape ... can't decode
-  bytes`): caused by an unescaped `\U` or similar in a plain Windows path string being
-  parsed as a Unicode escape. Use raw strings (`r"C:\Users\..."`) or forward slashes.
-- **PyCharm `CreateProcess error=2`**: the run configuration's Python interpreter
-  points at a venv from an unrelated project. Fix via
-  `Settings → Python | Interpreter → Add Local Interpreter → New environment`.
-- **Absolute paths hardcoded to a different machine**: fixed in the codebase itself
-  (`src/config.py`) — should not recur, but if you fork/modify scripts, avoid
-  reintroducing hardcoded absolute paths for exactly this reason.
 
 ---
 
@@ -218,7 +161,6 @@ Pure Python (`python-pptx`) — no Node.js/npm needed.
 ```
 ├── README.md                      <- this file
 ├── requirements.txt
-├── LICENSE
 ├── src/                            <- all pipeline code
 │   ├── config.py                    <- all paths, resolved relative to the repo (see §9)
 │   ├── distortions.py               <- 3 distortions x 5 severity levels
@@ -249,9 +191,7 @@ Pure Python (`python-pptx`) — no Node.js/npm needed.
 │   ├── tables/                      <- all raw + summary CSVs
 │   └── figures/                     <- all plots (referenced throughout this README)
 ├── presentations/
-│   ├── build_deck.py                <- builds the final PPTX (pure Python, python-pptx)
-│   ├── vision_robustness_presentation.pptx
-│   └── assets/                      <- figures embedded in the deck
+│   └── vision_robustness_presentation.pptx
 └── docs/
     └── (this README is the primary report)
 ```
@@ -261,11 +201,9 @@ Pure Python (`python-pptx`) — no Node.js/npm needed.
 ## 5. Dataset
 
 This project uses a **150-image subset of BDD100K** (`train` split), with matching
-detection labels. BDD100K was chosen after two other candidates turned out to be
-impractical:
+detection labels.
 
-- **Cityscapes**: requires a login-gated download with no way to script around it.
-- **KITTI**: the same login requirement applies to the packages needed here.
+
 - **BDD100K**: also login-gated for bulk download, but a subset downloaded locally is
   trivial to filter and hand off — see [§9](#9-development-log) for exactly how this
   was done, including filtering a ~1 GB label file down to what was actually needed.
@@ -289,7 +227,7 @@ onto COCO's 80 — see [§6.2](#62-tasks)):
 | person | 13 |
 
 The imbalance (dominated by cars/traffic lights; zero bicycle/motorcycle/train
-instances) is a known limitation of a 150-image sample — see [§8](#8-limitations).
+instances) is a known limitation of a 150-image sample — i could have seen it coming and choose random images until better split, but it is not the highlight of the project so i just continued
 
 ---
 
